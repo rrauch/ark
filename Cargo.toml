@@ -5,12 +5,12 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0"
-argon2 = "0.5"
 autonomi = "0.4"
 bech32 = { version = "0.11", features = ["alloc"] }
 bip39 = { version = "2.1", features = ["zeroize", "rand"] }
-bytes = "1.10"
 rand = { version = "0.9", features = ["thread_rng"] }
+sn_bls_ckd = "0.2.1"
+sn_curv = { version = "0.10.1", default-features = false, features = ["num-bigint"] }
 tokio = "1.44"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

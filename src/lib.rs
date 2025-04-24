@@ -1,111 +1,149 @@
 use anyhow::{anyhow, bail};
-use argon2::Argon2;
 use autonomi::client::key_derivation::DerivationIndex;
-use autonomi::register::RegisterAddress;
-use autonomi::{Client, PublicKey, SecretKey, XorName};
+use autonomi::client::payment::PaymentOption;
+use autonomi::register::{RegisterAddress, RegisterValue};
+use autonomi::{Client, PublicKey, SecretKey, Wallet, XorName};
 use bech32::{Bech32m, EncodeError, Hrp};
 use bip39::Mnemonic;
+use sn_bls_ckd::derive_master_sk;
+use sn_curv::elliptic::curves::ECScalar;
 use std::fmt::{Display, Formatter};
 use std::marker::PhantomData;
 use std::str::FromStr;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
-const SEED_SALT: &str = "/ark/v0/seed";
 const HELM_REGISTER_NAME: &str = "/ark/v0/helm/register";
-const HELM_KEY_SALT: &str = "/ark/v0/helm/key";
 const DATA_REGISTER_NAME: &str = "/ark/v0/data/register";
-const DATA_KEY_SALT: &str = "/ark/v0/data/key";
-
 const WORKER_REGISTER_NAME: &str = "/ark/v0/worker/register";
-const WORKER_KEY_SALT: &str = "/ark/v0/worker/key";
 
-#[derive(Clone, PartialEq, Eq)]
-struct KeyMaterial(Option<[u8; 32]>);
+pub struct Worker {
+    client: Client,
+    wallet: Wallet,
+}
 
-impl From<[u8; 32]> for KeyMaterial {
-    fn from(value: [u8; 32]) -> Self {
-        Self(Some(value))
+impl Worker {
+    pub fn new(client: Client, wallet: Wallet) -> Self {
+        Self { client, wallet }
     }
-}
 
-impl TryInto<SecretKey> for KeyMaterial {
-    type Error = anyhow::Error;
+    pub async fn create_ark(&mut self) -> anyhow::Result<ArkCreationDetails> {
+        let (ark_seed, mnemonic) = ArkSeed::random();
+        let helm_register = ark_seed.helm_register();
+        let helm_key_seed = HelmKeySeed::random();
+        self.create_register(&helm_register, helm_key_seed.clone())
+            .await?;
+        let helm_key = ark_seed.helm_key(&helm_key_seed);
 
-    fn try_into(mut self) -> Result<SecretKey, Self::Error> {
-        match self.0.take() {
-            Some(bytes) => Ok(SecretKey::from_bytes(bytes)?),
-            None => {
-                bail!("bytes already taken")
-            }
-        }
-    }
-}
+        let data_register = ark_seed.data_register();
+        let data_key_seed = DataKeySeed::random();
+        self.create_register(&data_register, data_key_seed.clone())
+            .await?;
+        let data_key = ark_seed.data_key(&data_key_seed);
 
-impl Drop for KeyMaterial {
-    fn drop(&mut self) {
-        if let Some(mut bytes) = self.0.take() {
-            bytes.zeroize();
-        }
-    }
-}
+        let worker_register = helm_key.worker_register();
+        let worker_key_seed = WorkerKeySeed::random();
+        self.create_register(&worker_register, worker_key_seed.clone())
+            .await?;
+        let worker_key = helm_key.worker_key(&worker_key_seed);
 
-#[derive(Clone, PartialEq, Eq)]
-pub struct Seed<T> {
-    bytes: KeyMaterial,
-    _type: PhantomData<T>,
-}
-
-impl<T: Kdf> Seed<T> {
-    fn try_from_bytes(bytes: impl AsRef<[u8]>) -> anyhow::Result<Self> {
-        Ok(Self {
-            bytes: KeyMaterial::from(T::derive_key(bytes)?),
-            _type: Default::default(),
+        Ok(ArkCreationDetails {
+            address: ark_seed.address(),
+            mnemonic,
+            helm_key,
+            data_key,
+            worker_key,
         })
     }
-}
 
-impl<T> Seed<T> {
-    fn key_material(&self) -> &KeyMaterial {
-        &self.bytes
+    async fn create_register<T, V: Into<RegisterValue>>(
+        &mut self,
+        register: &TypedOwnedRegister<T, V>,
+        value: V,
+    ) -> anyhow::Result<()> {
+        let address = self
+            .client
+            .register_create(register.owner.as_ref(), value.into(), self.payment())
+            .await?
+            .1;
+        if &register.address.inner != &address {
+            bail!("incorrect register address returned");
+        }
+        Ok(())
+    }
+
+    async fn read_register<T, V: TryFrom<RegisterValue>>(
+        &self,
+        address: &TypedRegisterAddress<T, V>,
+    ) -> anyhow::Result<V>
+    where
+        <V as TryFrom<RegisterValue>>::Error: Display,
+    {
+        Ok(self
+            .client
+            .register_get(&address.inner)
+            .await
+            .map(|e| V::try_from(e).map_err(|e| anyhow!("{}", e)))??)
+    }
+
+    fn payment(&self) -> PaymentOption {
+        PaymentOption::Wallet(self.wallet.clone())
     }
 }
 
-impl<T> TryInto<TypedSecretKey<T>> for Seed<T> {
-    type Error = anyhow::Error;
-
-    fn try_into(self) -> Result<TypedSecretKey<T>, Self::Error> {
-        Ok(TypedSecretKey::new(self.bytes.try_into()?))
-    }
-}
-
-trait Kdf {
-    fn derive_key(input: impl AsRef<[u8]>) -> anyhow::Result<[u8; 32]>;
-}
-
-struct TypedDerivationIndex<T> {
-    inner: DerivationIndex,
-    _type: PhantomData<T>,
-}
-
-impl<T> From<&Seed<T>> for TypedDerivationIndex<T> {
-    fn from(value: &Seed<T>) -> Self {
-        value.key_material().clone().0.unwrap().into()
-    }
+#[derive(Zeroize, ZeroizeOnDrop)]
+pub struct ArkCreationDetails {
+    #[zeroize(skip)]
+    pub address: ArkAddress,
+    pub mnemonic: String,
+    pub helm_key: HelmKey,
+    pub data_key: DataKey,
+    pub worker_key: WorkerKey,
 }
 
 impl<T> From<[u8; 32]> for TypedDerivationIndex<T> {
     fn from(value: [u8; 32]) -> Self {
-        let inner = DerivationIndex::from_bytes(value);
         Self {
-            inner,
+            inner: DerivationIndex::from_bytes(value),
             _type: Default::default(),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl<T> TryFrom<&[u8]> for TypedDerivationIndex<T> {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        if value.len() != 32 {
+            bail!("value length [{}] != 32", value.len());
+        }
+        let value: [u8; 32] = value.try_into()?;
+        Ok(Self::from(value))
+    }
+}
+
+impl<T> Into<RegisterValue> for TypedDerivationIndex<T> {
+    fn into(self) -> RegisterValue {
+        self.inner.into_bytes()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TypedDerivationIndex<T> {
+    inner: DerivationIndex,
+    _type: PhantomData<T>,
+}
+
+impl<T> TypedDerivationIndex<T> {
+    fn random() -> Self {
+        let seed: [u8; 32] = rand::random();
+        Self::from(seed)
+    }
+}
+
+#[derive(Zeroize, Debug, Clone, PartialEq, Eq)]
 pub struct TypedSecretKey<T> {
     inner: SecretKey,
+    #[zeroize(skip)]
     public_key: TypedPublicKey<T>,
 }
 
@@ -115,17 +153,16 @@ impl<T> TypedSecretKey<T> {
         Self { inner, public_key }
     }
 
-    pub fn public_key(&self) -> &TypedPublicKey<T> {
+    fn public_key(&self) -> &TypedPublicKey<T> {
         &self.public_key
-    }
-
-    fn derive_child_from_seed<C>(&self, seed: &Seed<C>) -> TypedSecretKey<C> {
-        let idx = TypedDerivationIndex::from(seed);
-        self.derive_child(&idx)
     }
 
     fn derive_child<C>(&self, idx: &TypedDerivationIndex<C>) -> TypedSecretKey<C> {
         TypedSecretKey::new(self.inner.derive_child(idx.inner.as_bytes()))
+    }
+
+    fn as_ref(&self) -> &SecretKey {
+        &self.inner
     }
 }
 
@@ -141,8 +178,20 @@ impl<T: Bech32Secret> FromStr for TypedSecretKey<T> {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let hrp = Hrp::parse(T::HRP).expect("hrp to be valid");
-        Ok(Self::new(secret_key_from_bech32(&hrp, s)?))
+        let expected_hrp = Hrp::parse(T::HRP).expect("hrp to be valid");
+        let (hrp, mut bytes) = bech32::decode(s.as_ref())?;
+        if hrp != expected_hrp {
+            bytes.zeroize();
+            bail!("hrp [{}] != [{}]", hrp, expected_hrp);
+        };
+        if bytes.len() != 32 {
+            bytes.zeroize();
+            bail!("invalid key len: [{}] != [{}]", bytes.len(), 32);
+        }
+
+        Ok(Self::new(SecretKey::from_bytes(
+            bytes.try_into().expect("byte vec of len 32"),
+        )?))
     }
 }
 
@@ -166,11 +215,6 @@ impl<T> TypedPublicKey<T> {
             inner,
             _type: Default::default(),
         }
-    }
-
-    fn derive_child_from_seed<C>(&self, seed: &Seed<C>) -> TypedPublicKey<C> {
-        let idx = TypedDerivationIndex::from(seed);
-        self.derive_child(&idx)
     }
 
     fn derive_child<C>(&self, idx: &TypedDerivationIndex<C>) -> TypedPublicKey<C> {
@@ -197,8 +241,18 @@ impl<T: Bech32Public> FromStr for TypedPublicKey<T> {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let hrp = Hrp::parse(T::HRP).expect("hrp to be valid");
-        Ok(Self::new(public_key_from_bech32(&hrp, s)?))
+        let expected_hrp = Hrp::parse(T::HRP).expect("hrp to be valid");
+
+        let (hrp, bytes) = bech32::decode(s.as_ref())?;
+        if hrp != expected_hrp {
+            bail!("hrp [{}] != [{}]", hrp, expected_hrp);
+        };
+        if bytes.len() != 48 {
+            bail!("invalid key len: [{}] != [{}]", bytes.len(), 48);
+        }
+        Ok(Self::new(PublicKey::from_bytes(
+            bytes.try_into().expect("byte vec of len 48"),
+        )?))
     }
 }
 
@@ -259,13 +313,7 @@ impl Bech32Secret for HelmKeyKind {
     const HRP: &'static str = "arkhelmsec";
 }
 
-impl Kdf for HelmKeyKind {
-    fn derive_key(input: impl AsRef<[u8]>) -> anyhow::Result<[u8; 32]> {
-        argon2id_kdf(input, HELM_KEY_SALT)
-    }
-}
-
-pub type HelmKeySeed = Seed<HelmKeyKind>;
+pub type HelmKeySeed = TypedDerivationIndex<HelmKeyKind>;
 pub type HelmKey = TypedSecretKey<HelmKeyKind>;
 
 impl HelmKey {
@@ -279,7 +327,7 @@ impl HelmKey {
     }
 
     pub fn worker_key(&self, seed: &WorkerKeySeed) -> WorkerKey {
-        self.derive_child_from_seed(seed)
+        self.derive_child(seed)
     }
 }
 
@@ -294,7 +342,7 @@ impl PublicHelmKey {
     }
 
     pub fn worker_key(&self, seed: &WorkerKeySeed) -> PublicWorkerKey {
-        self.derive_child_from_seed(seed)
+        self.derive_child(seed)
     }
 }
 
@@ -310,13 +358,7 @@ impl Bech32Secret for DataKeyKind {
     const HRP: &'static str = "arkdatasec";
 }
 
-impl Kdf for DataKeyKind {
-    fn derive_key(input: impl AsRef<[u8]>) -> anyhow::Result<[u8; 32]> {
-        argon2id_kdf(input, DATA_KEY_SALT)
-    }
-}
-
-pub type DataKeySeed = Seed<DataKeyKind>;
+pub type DataKeySeed = TypedDerivationIndex<DataKeyKind>;
 pub type DataKey = TypedSecretKey<DataKeyKind>;
 pub type PublicDataKey = TypedPublicKey<DataKeyKind>;
 
@@ -334,51 +376,52 @@ impl Bech32Secret for WorkerKeyKind {
     const HRP: &'static str = "arkworkersec";
 }
 
-impl Kdf for WorkerKeyKind {
-    fn derive_key(input: impl AsRef<[u8]>) -> anyhow::Result<[u8; 32]> {
-        argon2id_kdf(input, WORKER_KEY_SALT)
-    }
-}
-
-pub type WorkerKeySeed = Seed<WorkerKeyKind>;
+pub type WorkerKeySeed = TypedDerivationIndex<WorkerKeyKind>;
 pub type WorkerKey = TypedSecretKey<WorkerKeyKind>;
 pub type PublicWorkerKey = TypedPublicKey<WorkerKeyKind>;
 
-impl TryFrom<Mnemonic> for Seed<ArkSeedKind> {
+impl TryFrom<Mnemonic> for ArkSeed {
     type Error = anyhow::Error;
 
-    fn try_from(value: Mnemonic) -> Result<Self, Self::Error> {
-        Seed::try_from_bytes(value.to_entropy_array().0.as_slice())
+    fn try_from(mut value: Mnemonic) -> Result<Self, Self::Error> {
+        let mut seed = value.to_seed_normalized("");
+        value.zeroize();
+        let key_bytes = match eip2333(&seed) {
+            Ok(key_bytes) => key_bytes,
+            Err(err) => {
+                seed.zeroize();
+                return Err(err);
+            }
+        };
+        seed.zeroize();
+        Ok(Self::new(SecretKey::from_bytes(key_bytes)?))
     }
 }
 
 pub struct ArkSeedKind;
-
-impl Kdf for ArkSeedKind {
-    fn derive_key(input: impl AsRef<[u8]>) -> anyhow::Result<[u8; 32]> {
-        argon2id_kdf(&input, SEED_SALT)
-    }
-}
 
 pub type ArkSeed = TypedSecretKey<ArkSeedKind>;
 
 impl ArkSeed {
     pub fn random() -> (Self, String) {
         let mnemonic = Mnemonic::generate(24).expect("24 to be a valid word count");
-        // todo: zeroize?
         let s = mnemonic.to_string();
 
-        let this = Self::_try_from_mnemonic(mnemonic)
-            .expect("generated mnemonic to lead to valid ark seed");
+        let this = Self::try_from(mnemonic).expect("generated mnemonic to lead to valid ark seed");
         (this, s)
     }
 
-    pub fn try_from_mnemonic(s: impl AsRef<str>) -> anyhow::Result<Self> {
-        Self::_try_from_mnemonic(Mnemonic::parse_normalized(s.as_ref())?)
-    }
+    pub fn try_from_mnemonic(mut s: String) -> anyhow::Result<Self> {
+        let mnemonic = match Mnemonic::parse_normalized(s.as_str()) {
+            Ok(mnemonic) => mnemonic,
+            Err(err) => {
+                s.zeroize();
+                return Err(err.into());
+            }
+        };
+        s.zeroize();
 
-    fn _try_from_mnemonic(mnemonic: Mnemonic) -> anyhow::Result<Self> {
-        Ok(Seed::<ArkSeedKind>::try_from(mnemonic)?.try_into()?)
+        Ok(Self::try_from(mnemonic)?)
     }
 
     pub fn address(&self) -> ArkAddress {
@@ -395,7 +438,7 @@ impl ArkSeed {
     }
 
     pub fn helm_key(&self, seed: &HelmKeySeed) -> HelmKey {
-        self.derive_child_from_seed(seed)
+        self.derive_child(seed)
     }
 
     pub fn data_register(&self) -> DataRegister {
@@ -408,7 +451,7 @@ impl ArkSeed {
     }
 
     pub fn data_key(&self, seed: &DataKeySeed) -> DataKey {
-        self.derive_child_from_seed(seed)
+        self.derive_child(seed)
     }
 }
 
@@ -427,7 +470,7 @@ impl ArkAddress {
     }
 
     pub fn helm_key(&self, seed: &HelmKeySeed) -> PublicHelmKey {
-        self.derive_child_from_seed(seed)
+        self.derive_child(seed)
     }
 
     pub fn data_register(&self) -> DataRegisterAddress {
@@ -435,7 +478,7 @@ impl ArkAddress {
     }
 
     pub fn data_key(&self, seed: &DataKeySeed) -> PublicDataKey {
-        self.derive_child_from_seed(seed)
+        self.derive_child(seed)
     }
 }
 
@@ -445,65 +488,12 @@ fn register_address_from_name(owner: &PublicKey, name: impl AsRef<str>) -> Regis
     RegisterAddress::new(owner.derive_child(derivation_index.as_bytes().as_slice()))
 }
 
-fn public_key_from_bech32(expected_hrp: &Hrp, input: impl AsRef<str>) -> anyhow::Result<PublicKey> {
-    let (hrp, bytes) = bech32::decode(input.as_ref())?;
-    if &hrp != expected_hrp {
-        bail!("hrp [{}] != [{}]", hrp, expected_hrp);
-    };
-    if bytes.len() != 48 {
-        bail!("invalid key len: [{}] != [{}]", bytes.len(), 48);
-    }
-    Ok(PublicKey::from_bytes(
-        bytes.try_into().expect("byte vec of len 48"),
-    )?)
-}
-
-fn secret_key_from_bech32(expected_hrp: &Hrp, input: impl AsRef<str>) -> anyhow::Result<SecretKey> {
-    //todo: zeroize?
-    let (hrp, bytes) = bech32::decode(input.as_ref())?;
-    if &hrp != expected_hrp {
-        bail!("hrp [{}] != [{}]", hrp, expected_hrp);
-    };
-    if bytes.len() != 32 {
-        bail!("invalid key len: [{}] != [{}]", bytes.len(), 32);
-    }
-    Ok(SecretKey::from_bytes(
-        bytes.try_into().expect("byte vec of len 48"),
-    )?)
-}
-
-// --- SHAVING STEP (Big-Endian) ---
-// Context:
-// BLS12-381 scalar field elements must be in a 'canonical' range [0, q-1],
-// where q is the scalar field modulus.
-// The modulus q is a large prime, slightly less than 2^255.
-// The 32 bytes derived from the seed represent a 256-bit number (2^256 - 1 max value).
-// This number *could* be >= q, which is not allowed by SecretKey::from_bytes
-// (it expects the number represented by the bytes to be < q).
-
-// Action:
-// To ensure the 256-bit number is overwhelmingly likely to be < q,
-// we force its highest possible bit (the 2^255 position) to zero.
-// In a 32-byte big-endian representation, the 2^255 bit is the
-// most significant bit (MSB) of the first byte (index 0).
-// The bitmask 0x7F (binary 01111111) is applied using bitwise AND (&).
-// This clears the MSB (bit 7) while leaving bits 0-6 unchanged.
-
-// Why:
-// By clearing the 2^255 bit, the resulting 256-bit number is mathematically
-// guaranteed to be strictly less than 2^255. Since q is only slightly
-// less than 2^255, any number < 2^255 is almost certainly also < q.
-// This satisfies the canonical requirement for SecretKey::from_bytes
-// with extremely high probability (~1 - 2^-128 failure rate).
-fn shave(seed: &mut [u8; 32]) {
-    seed[0] &= 0x7F;
-}
-
-fn argon2id_kdf(input: impl AsRef<[u8]>, salt: impl AsRef<[u8]>) -> anyhow::Result<[u8; 32]> {
-    let mut seed = [0u8; 32];
-    Argon2::default()
-        .hash_password_into(input.as_ref(), salt.as_ref(), &mut seed)
-        .map_err(|e| anyhow!("argon2 error: {}", e))?;
-    shave(&mut seed);
-    Ok(seed)
+fn eip2333(seed: impl AsRef<[u8]>) -> anyhow::Result<[u8; 32]> {
+    // Derive BLS12-381 master secret key from seed using EIP-2333 standard.
+    // Guarantees a valid, non-zero scalar represented as 32 Big-Endian bytes.
+    let key_bytes: [u8; 32] = derive_master_sk(seed.as_ref())
+        .map_err(|e| anyhow!("derive_master_sk error: {}", e))?
+        .serialize() // Get the 32-byte Big-Endian representation
+        .into(); // Convert GenericArray<u8, 32> to [u8; 32]
+    Ok(key_bytes)
 }
