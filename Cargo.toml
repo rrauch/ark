@@ -1,0 +1,18 @@
+[package]
+name = "poc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+argon2 = "0.5"
+autonomi = "0.4"
+bech32 = { version = "0.11", features = ["alloc"] }
+bip39 = { version = "2.1", features = ["zeroize", "rand"] }
+bytes = "1.10"
+rand = { version = "0.9", features = ["thread_rng"] }
+tokio = "1.44"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zeroize = "1.8"
+
