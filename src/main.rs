@@ -1,5 +1,5 @@
 use autonomi::{Client, Wallet};
-use poc::Worker;
+use poc::{ArkCreationSettings, Engine};
 use tracing::Level;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -23,13 +23,22 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("SECRET_KEY")?.as_str(),
     )?;
 
-    let mut worker = Worker::new(client, wallet);
-    let ark_details = worker.create_ark().await?;
+    let mut engine = Engine::new(client, wallet);
+    let ark_details = engine
+        .create_ark(&ArkCreationSettings::builder().name("Test Ark").build())
+        .await?;
 
     println!("-----------------------------------------");
     println!("New Ark Created!");
     println!();
     println!("Address: {}", ark_details.address);
+    println!("Created at: {}", ark_details.manifest.created);
+    println!("Name: {}", ark_details.manifest.name);
+    if let Some(description) = ark_details.manifest.description.as_ref() {
+        println!("-----------");
+        println!("{}", description);
+        println!("-----------")
+    }
     println!();
     println!("Your recovery words:");
     println!("{}", ark_details.mnemonic);

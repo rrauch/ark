@@ -1,22 +1,27 @@
 mod typed;
 
-use crate::keys::typed::{
+use crate::crypto::typed::{
     Bech32Public, Bech32Secret, TypedDerivationIndex, TypedPublicKey, TypedSecretKey,
 };
 use anyhow::anyhow;
-use autonomi::client::key_derivation::DerivationIndex;
+use autonomi::client::key_derivation::{DerivationIndex, MainSecretKey};
 use autonomi::register::RegisterAddress;
-use autonomi::{Client, PublicKey, SecretKey, XorName};
+use autonomi::{Client, PointerAddress, PublicKey, SecretKey, XorName};
 use bip39::Mnemonic;
 use sn_bls_ckd::derive_master_sk;
 use sn_curv::elliptic::curves::ECScalar;
 use zeroize::Zeroize;
 
-pub(crate) use crate::keys::typed::{TypedOwnedRegister, TypedRegisterAddress};
+pub(crate) use crate::crypto::typed::{
+    EncryptedChunk, TypedChunk, TypedChunkAddress, TypedOwnedPointer, TypedOwnedRegister,
+    TypedPointerAddress, TypedRegisterAddress,
+};
+use crate::manifest::Manifest;
 
 const HELM_REGISTER_NAME: &str = "/ark/v0/helm/register";
 const DATA_REGISTER_NAME: &str = "/ark/v0/data/register";
 const WORKER_REGISTER_NAME: &str = "/ark/v0/worker/register";
+const MANIFEST_POINTER_NAME: &str = "/ark/v0/manifest/pointer";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HelmRegisterKind;
@@ -46,7 +51,19 @@ impl HelmKey {
     pub fn worker_key(&self, seed: &WorkerKeySeed) -> WorkerKey {
         self.derive_child(seed)
     }
+
+    pub fn manifest_pointer(&self) -> OwnedManifestPointer {
+        let owner =
+            TypedSecretKey::new(pointer_key_from_name(self.as_ref(), MANIFEST_POINTER_NAME));
+
+        OwnedManifestPointer::new(owner)
+    }
 }
+
+pub type OwnedManifestPointer =
+    TypedOwnedPointer<HelmKeyKind, EncryptedChunk<WorkerKeyKind, Manifest>>;
+pub type ManifestPointer =
+    TypedPointerAddress<HelmKeyKind, EncryptedChunk<WorkerKeyKind, Manifest>>;
 
 pub type PublicHelmKey = TypedPublicKey<HelmKeyKind>;
 
@@ -60,6 +77,13 @@ impl PublicHelmKey {
 
     pub fn worker_key(&self, seed: &WorkerKeySeed) -> PublicWorkerKey {
         self.derive_child(seed)
+    }
+
+    pub fn manifest_pointer(&self) -> ManifestPointer {
+        ManifestPointer::new(pointer_address_from_name(
+            self.as_ref(),
+            MANIFEST_POINTER_NAME,
+        ))
     }
 }
 
@@ -142,8 +166,8 @@ impl ArkSeed {
         Ok(Self::try_from(mnemonic)?)
     }
 
-    pub fn address(&self) -> ArkAddress {
-        self.public_key().clone()
+    pub fn address(&self) -> &ArkAddress {
+        self.public_key()
     }
 
     pub fn helm_register(&self) -> HelmRegister {
@@ -217,4 +241,16 @@ fn register_address_from_name(owner: &PublicKey, name: impl AsRef<str>) -> Regis
     let derivation_index =
         DerivationIndex::from_bytes(XorName::from_content(name.as_ref().as_bytes()).0);
     RegisterAddress::new(owner.derive_child(derivation_index.as_bytes().as_slice()))
+}
+
+fn pointer_key_from_name(owner: &SecretKey, name: &str) -> SecretKey {
+    let main_key = MainSecretKey::new(owner.clone());
+    let derivation_index = DerivationIndex::from_bytes(XorName::from_content(name.as_bytes()).0);
+    main_key.derive_key(&derivation_index).into()
+}
+
+fn pointer_address_from_name(owner: &PublicKey, name: impl AsRef<str>) -> PointerAddress {
+    let derivation_index =
+        DerivationIndex::from_bytes(XorName::from_content(name.as_ref().as_bytes()).0);
+    PointerAddress::new(owner.derive_child(derivation_index.as_bytes().as_slice()))
 }

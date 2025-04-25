@@ -5,9 +5,14 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0"
-autonomi = "0.4"
+autonomi = "0.4.4"
 bech32 = { version = "0.11", features = ["alloc"] }
 bip39 = { version = "2.1", features = ["zeroize", "rand"] }
+blsttc = "8.0.2"
+bon = "3.6"
+bytes = "1.10"
+chrono = "0.4"
+prost = "0.13"
 rand = { version = "0.9", features = ["thread_rng"] }
 sn_bls_ckd = "0.2.1"
 sn_curv = { version = "0.10.1", default-features = false, features = ["num-bigint"] }
@@ -16,3 +21,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zeroize = "1.8"
 
+[build-dependencies]
+anyhow = "1"
+prost-build = "0.13"
+protoc-bin-vendored = "3.1"
+tokio = { version = "1.44", features = ["full"] }

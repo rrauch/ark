@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package manifest;
+import "protos/common.proto";
+
+message Manifest {
+  common.Address address = 1;
+  common.Timestamp created = 2;
+  string name = 3;
+  optional string description = 4;
+}
