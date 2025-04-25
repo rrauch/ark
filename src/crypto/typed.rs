@@ -68,7 +68,7 @@ impl<T> TypedSecretKey<T> {
         &self.public_key
     }
 
-    pub fn decrypt<V: for<'a> TryFrom<&'a [u8]>>(
+    pub(super) fn decrypt<V: for<'a> TryFrom<&'a [u8]>>(
         &self,
         input: &EncryptedData<T, V>,
     ) -> anyhow::Result<V>
@@ -144,7 +144,7 @@ impl<T> TypedPublicKey<T> {
         &self.inner
     }
 
-    pub(crate) fn encrypt<V: Into<Bytes>>(&self, input: V) -> EncryptedData<T, V> {
+    pub(super) fn encrypt<V: Into<Bytes>>(&self, input: V) -> EncryptedData<T, V> {
         let plaintext = input.into();
         let encrypted = EncryptedData::from_ciphertext(self.inner.encrypt(plaintext.as_ref()));
         encrypted

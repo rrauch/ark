@@ -1,7 +1,7 @@
 mod typed;
 
 use crate::crypto::typed::{
-    Bech32Public, Bech32Secret, TypedDerivationIndex, TypedPublicKey, TypedSecretKey,
+    Bech32Public, Bech32Secret, EncryptedData, TypedDerivationIndex, TypedPublicKey, TypedSecretKey,
 };
 use anyhow::anyhow;
 use autonomi::client::key_derivation::{DerivationIndex, MainSecretKey};
@@ -118,8 +118,25 @@ impl Bech32Secret for WorkerKeyKind {
 }
 
 pub type WorkerKeySeed = TypedDerivationIndex<WorkerKeyKind>;
+pub type EncryptedManifest = EncryptedData<WorkerKeyKind, Manifest>;
 pub type WorkerKey = TypedSecretKey<WorkerKeyKind>;
+
+impl WorkerKey {
+    pub fn decrypt_manifest(
+        &self,
+        encrypted_manifest: &EncryptedManifest,
+    ) -> anyhow::Result<Manifest> {
+        self.decrypt(encrypted_manifest)
+    }
+}
+
 pub type PublicWorkerKey = TypedPublicKey<WorkerKeyKind>;
+
+impl PublicWorkerKey {
+    pub fn encrypt_manifest(&self, manifest: &Manifest) -> EncryptedManifest {
+        self.encrypt(manifest.clone())
+    }
+}
 
 impl TryFrom<Mnemonic> for ArkSeed {
     type Error = anyhow::Error;

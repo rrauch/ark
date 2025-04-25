@@ -62,7 +62,7 @@ impl Engine {
 
         let manifest = Manifest::new(&ark_address, settings);
         let manifest_chunk =
-            EncryptedChunk::from_value(worker_key.public_key().encrypt(manifest.clone()));
+            EncryptedChunk::from_value(worker_key.public_key().encrypt_manifest(&manifest));
         self.put_chunk(&manifest_chunk).await?;
 
         let manifest_pointer = helm_key.manifest_pointer();
