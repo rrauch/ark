@@ -1,9 +1,8 @@
 use crate::crypto::ArkAddress;
+use crate::protos::{deserialize_with_header, serialize_with_header};
 use crate::{ArkCreationSettings, VaultCreationSettings};
-use anyhow::bail;
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use prost::Message;
 use uuid::Uuid;
 
 const MAGIC_NUMBER: &'static [u8; 16] = &[
@@ -56,25 +55,13 @@ impl Manifest {
     }
 
     pub(super) fn deserialize(data: impl AsRef<[u8]>) -> anyhow::Result<Self> {
-        let mut buf = data.as_ref();
-        let mut header = [0u8; MAGIC_NUMBER.len()];
-        buf.copy_to_slice(&mut header);
-        if header.as_ref() != MAGIC_NUMBER {
-            bail!("invalid manifest, header mismatch");
-        }
-        let proto = protos::Manifest::decode(data.as_ref())?;
+        let proto: protos::Manifest = deserialize_with_header(data, MAGIC_NUMBER)?;
         proto.try_into()
     }
 
     pub(super) fn serialize(&self) -> Bytes {
         let proto = protos::Manifest::from(self.clone());
-        let len = MAGIC_NUMBER.len() + proto.encoded_len();
-        let mut buf = BytesMut::with_capacity(len);
-        buf.put(MAGIC_NUMBER.as_slice());
-        proto
-            .encode(&mut buf)
-            .expect("writing to buffer should never fail");
-        buf.freeze()
+        serialize_with_header(&proto, MAGIC_NUMBER)
     }
 }
 
@@ -88,6 +75,14 @@ impl TryFrom<&[u8]> for Manifest {
     type Error = anyhow::Error;
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        Manifest::deserialize(value)
+    }
+}
+
+impl TryFrom<Bytes> for Manifest {
+    type Error = anyhow::Error;
+
+    fn try_from(value: Bytes) -> Result<Self, Self::Error> {
         Manifest::deserialize(value)
     }
 }

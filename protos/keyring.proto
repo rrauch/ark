@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package keyring;
+
+message SecretKey {
+  string bech32 = 1;
+}
+
+message KeyRing {
+  repeated SecretKey secret_keys = 1;
+}

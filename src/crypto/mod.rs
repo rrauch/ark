@@ -1,27 +1,40 @@
-mod typed;
+mod chunk;
+mod keyring;
+mod keys;
+mod pointer;
+mod register;
+mod scratchpad;
 
-use crate::crypto::typed::{
-    Bech32Public, Bech32Secret, EncryptedData, TypedDerivationIndex, TypedPublicKey, TypedSecretKey,
-};
-use anyhow::anyhow;
+use crate::crypto::keyring::KeyRing;
+use crate::crypto::keys::{TypedDerivationIndex, TypedPublicKey, TypedSecretKey};
+use crate::manifest::Manifest;
+use anyhow::{anyhow, bail};
 use autonomi::client::key_derivation::{DerivationIndex, MainSecretKey};
 use autonomi::register::RegisterAddress;
-use autonomi::{Client, PointerAddress, PublicKey, SecretKey, XorName};
+use autonomi::{Client, PointerAddress, PublicKey, ScratchpadAddress, SecretKey, XorName};
 use bip39::Mnemonic;
+use blsttc::Ciphertext;
+use bytes::Bytes;
 use sn_bls_ckd::derive_master_sk;
 use sn_curv::elliptic::curves::ECScalar;
+use std::marker::PhantomData;
 use zeroize::Zeroize;
 
-pub(crate) use crate::crypto::typed::{
-    EncryptedChunk, TypedChunk, TypedChunkAddress, TypedOwnedPointer, TypedOwnedRegister,
-    TypedPointerAddress, TypedRegisterAddress,
+pub(crate) use chunk::{TypedChunk, TypedChunkAddress};
+pub(crate) use pointer::{TypedOwnedPointer, TypedPointerAddress};
+pub(crate) use register::{TypedOwnedRegister, TypedRegisterAddress};
+pub(crate) use scratchpad::{
+    Content as ScratchpadContent, EncryptedContent as EncryptedScratchpadContent,
+    PlaintextScratchpad, TypedOwnedScratchpad, TypedScratchpadAddress,
 };
-use crate::manifest::Manifest;
 
 const HELM_REGISTER_NAME: &str = "/ark/v0/helm/register";
 const DATA_REGISTER_NAME: &str = "/ark/v0/data/register";
 const WORKER_REGISTER_NAME: &str = "/ark/v0/worker/register";
-const MANIFEST_POINTER_NAME: &str = "/ark/v0/manifest/pointer";
+const MANIFEST_NAME: &str = "/ark/v0/manifest/scratchpad";
+const MANIFEST_SCRATCHPAD_ENCODING: u64 = 344850175421548714;
+const DATA_KEYRING_NAME: &str = "/ark/v0/data/keyring/scratchpad";
+const DATA_KEYRING_SCRATCHPAD_ENCODING: u64 = 845573457394578892;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HelmRegisterKind;
@@ -52,18 +65,20 @@ impl HelmKey {
         self.derive_child(seed)
     }
 
-    pub fn manifest_pointer(&self) -> OwnedManifestPointer {
-        let owner =
-            TypedSecretKey::new(pointer_key_from_name(self.as_ref(), MANIFEST_POINTER_NAME));
+    pub fn manifest(&self) -> OwnedManifest {
+        let owner = TypedSecretKey::new(key_from_name(self.as_ref(), MANIFEST_NAME));
 
-        OwnedManifestPointer::new(owner)
+        OwnedManifest::new(owner)
     }
 }
 
-pub type OwnedManifestPointer =
-    TypedOwnedPointer<HelmKeyKind, EncryptedChunk<WorkerKeyKind, Manifest>>;
-pub type ManifestPointer =
-    TypedPointerAddress<HelmKeyKind, EncryptedChunk<WorkerKeyKind, Manifest>>;
+impl ScratchpadContent for Manifest {
+    const ENCODING: u64 = MANIFEST_SCRATCHPAD_ENCODING;
+}
+
+pub type OwnedManifest = TypedOwnedScratchpad<HelmKeyKind, EncryptedManifest>;
+
+pub type ManifestAddress = TypedScratchpadAddress<HelmKeyKind, EncryptedManifest>;
 
 pub type PublicHelmKey = TypedPublicKey<HelmKeyKind>;
 
@@ -79,11 +94,8 @@ impl PublicHelmKey {
         self.derive_child(seed)
     }
 
-    pub fn manifest_pointer(&self) -> ManifestPointer {
-        ManifestPointer::new(pointer_address_from_name(
-            self.as_ref(),
-            MANIFEST_POINTER_NAME,
-        ))
+    pub fn manifest(&self) -> ManifestAddress {
+        ManifestAddress::new(scratchpad_address_from_name(self.as_ref(), MANIFEST_NAME))
     }
 }
 
@@ -101,7 +113,40 @@ impl Bech32Secret for DataKeyKind {
 
 pub type DataKeySeed = TypedDerivationIndex<DataKeyKind>;
 pub type DataKey = TypedSecretKey<DataKeyKind>;
-pub type PublicDataKey = TypedPublicKey<DataKeyKind>;
+
+impl DataKey {
+    pub fn decrypt_data_keyring(
+        &self,
+        encrypted_keyring: &EncryptedDataKeyRing,
+    ) -> anyhow::Result<DataKeyRing> {
+        self.decrypt(encrypted_keyring)
+    }
+}
+
+pub type SealKey = TypedPublicKey<DataKeyKind>;
+
+impl SealKey {
+    pub fn encrypt_data_keyring(&self, keyring: &DataKeyRing) -> EncryptedDataKeyRing {
+        self.encrypt(keyring.clone())
+    }
+}
+
+pub type DataKeyRing = KeyRing<DataKeyKind>;
+
+impl ScratchpadContent for DataKeyRing {
+    const ENCODING: u64 = DATA_KEYRING_SCRATCHPAD_ENCODING;
+}
+
+pub type EncryptedDataKeyRing = EncryptedData<DataKeyKind, DataKeyRing>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DataKeyRingKind;
+
+pub type DataKeyRingOwner =
+    TypedOwnedScratchpad<DataKeyRingKind, EncryptedData<DataKeyKind, DataKeyRing>>;
+
+pub type DataKeyRingAddress =
+    TypedScratchpadAddress<DataKeyRingKind, EncryptedData<DataKeyKind, DataKeyRing>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WorkerRegisterKind;
@@ -212,6 +257,12 @@ impl ArkSeed {
     pub fn data_key(&self, seed: &DataKeySeed) -> DataKey {
         self.derive_child(seed)
     }
+
+    pub fn data_keyring(&self) -> DataKeyRingOwner {
+        let owner = TypedSecretKey::new(key_from_name(self.as_ref(), DATA_KEYRING_NAME));
+
+        DataKeyRingOwner::new(owner)
+    }
 }
 
 impl Bech32Public for ArkRoot {
@@ -239,8 +290,61 @@ impl ArkAddress {
         ))
     }
 
-    pub fn data_key(&self, seed: &DataKeySeed) -> PublicDataKey {
+    pub fn seal_key(&self, seed: &DataKeySeed) -> SealKey {
         self.derive_child(seed)
+    }
+
+    pub fn data_keyring(&self) -> DataKeyRingAddress {
+        DataKeyRingAddress::new(scratchpad_address_from_name(
+            self.as_ref(),
+            DATA_KEYRING_NAME,
+        ))
+    }
+}
+
+pub trait Bech32Secret {
+    const HRP: &'static str;
+}
+
+pub trait Bech32Public {
+    const HRP: &'static str;
+}
+
+pub struct EncryptedData<T, V> {
+    inner: Ciphertext,
+    _type: PhantomData<T>,
+    _value_type: PhantomData<V>,
+}
+
+impl<T, V> EncryptedData<T, V> {
+    fn from_ciphertext(inner: Ciphertext) -> Self {
+        Self {
+            inner,
+            _type: Default::default(),
+            _value_type: Default::default(),
+        }
+    }
+
+    fn try_from_bytes(bytes: impl AsRef<[u8]>) -> anyhow::Result<Self> {
+        let ciphertext = Ciphertext::from_bytes(bytes.as_ref())?;
+        if !ciphertext.verify() {
+            bail!("ciphertext verification failed, not a valid ciphertext");
+        }
+        Ok(Self::from_ciphertext(ciphertext))
+    }
+}
+
+impl<T, V> Into<Bytes> for EncryptedData<T, V> {
+    fn into(self) -> Bytes {
+        Bytes::from(self.inner.to_bytes())
+    }
+}
+
+impl<T, V> TryFrom<Bytes> for EncryptedData<T, V> {
+    type Error = anyhow::Error;
+
+    fn try_from(value: Bytes) -> Result<Self, Self::Error> {
+        EncryptedData::try_from_bytes(value.as_ref())
     }
 }
 
@@ -254,20 +358,26 @@ fn eip2333(seed: impl AsRef<[u8]>) -> anyhow::Result<[u8; 32]> {
     Ok(key_bytes)
 }
 
+fn key_from_name(owner: &SecretKey, name: &str) -> SecretKey {
+    let main_key = MainSecretKey::new(owner.clone());
+    let derivation_index = DerivationIndex::from_bytes(XorName::from_content(name.as_bytes()).0);
+    main_key.derive_key(&derivation_index).into()
+}
+
 fn register_address_from_name(owner: &PublicKey, name: impl AsRef<str>) -> RegisterAddress {
     let derivation_index =
         DerivationIndex::from_bytes(XorName::from_content(name.as_ref().as_bytes()).0);
     RegisterAddress::new(owner.derive_child(derivation_index.as_bytes().as_slice()))
 }
 
-fn pointer_key_from_name(owner: &SecretKey, name: &str) -> SecretKey {
-    let main_key = MainSecretKey::new(owner.clone());
-    let derivation_index = DerivationIndex::from_bytes(XorName::from_content(name.as_bytes()).0);
-    main_key.derive_key(&derivation_index).into()
-}
-
 fn pointer_address_from_name(owner: &PublicKey, name: impl AsRef<str>) -> PointerAddress {
     let derivation_index =
         DerivationIndex::from_bytes(XorName::from_content(name.as_ref().as_bytes()).0);
     PointerAddress::new(owner.derive_child(derivation_index.as_bytes().as_slice()))
+}
+
+fn scratchpad_address_from_name(owner: &PublicKey, name: impl AsRef<str>) -> ScratchpadAddress {
+    let derivation_index =
+        DerivationIndex::from_bytes(XorName::from_content(name.as_ref().as_bytes()).0);
+    ScratchpadAddress::new(owner.derive_child(derivation_index.as_bytes().as_slice()))
 }
