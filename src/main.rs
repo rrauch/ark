@@ -1,5 +1,5 @@
 use autonomi::{Client, Wallet};
-use poc::{ArkCreationSettings, Engine};
+use poc::{ArkCreationSettings, Engine, VaultCreationSettings};
 use tracing::Level;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -48,6 +48,19 @@ async fn main() -> anyhow::Result<()> {
     println!("Worker Key: {}", ark_details.worker_key.danger_to_string());
     println!("-----------------------------------------");
 
-    println!("foo");
+    engine
+        .add_ark(&ark_details.address, ark_details.worker_key.clone())
+        .await?;
+
+    let vault_id = engine
+        .create_vault(
+            VaultCreationSettings::builder().name("Vault 1").build(),
+            &ark_details.helm_key,
+            &ark_details.address,
+        )
+        .await?;
+    println!("added vault {}", vault_id);
+
+    println!();
     Ok(())
 }

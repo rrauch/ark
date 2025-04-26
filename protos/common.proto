@@ -10,3 +10,8 @@ message Timestamp {
 message Address {
   string bech32 = 1;
 }
+
+message Uuid {
+  uint64 most_significant = 1;
+  uint64 least_significant = 2;
+}

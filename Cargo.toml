@@ -19,6 +19,7 @@ sn_curv = { version = "0.10.1", default-features = false, features = ["num-bigin
 tokio = "1.44"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1.16", features = ["v7"] }
 zeroize = "1.8"
 
 [build-dependencies]
