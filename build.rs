@@ -1,5 +1,5 @@
-use std::{env, fs};
 use std::path::Path;
+use std::{env, fs};
 
 fn main() -> anyhow::Result<()> {
     // Compile protos

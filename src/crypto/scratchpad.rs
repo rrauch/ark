@@ -1,10 +1,16 @@
 use crate::crypto::keys::{TypedPublicKey, TypedSecretKey};
-use crate::crypto::EncryptedData;
+use crate::crypto::{EncryptedData, Terminable};
 use anyhow::{anyhow, bail};
 use autonomi::{Client, Scratchpad, ScratchpadAddress};
 use bytes::Bytes;
+use once_cell::sync::Lazy;
 use std::fmt::Display;
 use std::marker::PhantomData;
+use std::ops::Deref;
+
+const TERMINATION_ENCODING: u64 = u64::MAX;
+const TERMINATION_COUNTER: u64 = u64::MAX;
+static TOMBSTONE_VALUE: Lazy<Bytes> = Lazy::new(|| Bytes::from_static("RIP".as_bytes()));
 
 pub trait Content: Into<Bytes> + TryFrom<Bytes> {
     const ENCODING: u64;
@@ -85,6 +91,10 @@ impl<T, V: Content> PlaintextScratchpad<T, V> {
 
 impl<T, V: Content> PlaintextScratchpad<T, V> {
     pub(crate) fn try_from_scratchpad(pad: Scratchpad) -> anyhow::Result<Self> {
+        if is_terminated(&pad) {
+            bail!("scratchpad is terminated");
+        }
+
         if pad.data_encoding() != V::ENCODING {
             bail!(
                 "incorrect data_encoding for content: expected [{}] but got [{}]",
@@ -164,4 +174,34 @@ impl<T, V> PlaintextScratchpad<T, V> {
 
         Ok(pad)
     }
+}
+
+impl<T, V: Terminable> PlaintextScratchpad<T, V> {
+    pub fn terminate(mut self, owner: &TypedOwnedScratchpad<T, V>) -> anyhow::Result<Scratchpad> {
+        if self.is_terminated() {
+            bail!("scratchpad already terminated");
+        }
+
+        if self.counter >= TERMINATION_COUNTER {
+            bail!("scratchpad counter already >= [{}]", TERMINATION_COUNTER);
+        }
+
+        self.data_encoding = TERMINATION_ENCODING;
+        self.counter = TERMINATION_COUNTER;
+        self.content = TOMBSTONE_VALUE.clone();
+
+        self.try_into_scratchpad(owner)
+    }
+
+    pub fn is_terminated(&self) -> bool {
+        self.data_encoding == TERMINATION_ENCODING
+            && self.counter == TERMINATION_COUNTER
+            && &self.content == TOMBSTONE_VALUE.deref()
+    }
+}
+
+fn is_terminated(pad: &Scratchpad) -> bool {
+    pad.data_encoding() == TERMINATION_ENCODING
+        && pad.counter() == TERMINATION_COUNTER
+        && pad.encrypted_data() == TOMBSTONE_VALUE.deref()
 }

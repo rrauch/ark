@@ -14,6 +14,7 @@ use crate::vault::{Vault, VaultId};
 use chrono::{DateTime, Utc};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+pub use crypto::ArkSeed;
 pub use engine::Engine;
 
 pub struct Ark {

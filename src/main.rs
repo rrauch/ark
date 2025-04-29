@@ -1,5 +1,5 @@
 use autonomi::{Client, Wallet};
-use poc::{ArkCreationSettings, Engine, VaultCreationSettings};
+use poc::{ArkCreationSettings, ArkSeed, Engine, VaultCreationSettings};
 use tracing::Level;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -60,7 +60,17 @@ async fn main() -> anyhow::Result<()> {
         )
         .await?;
     println!("added vault {}", vault_id);
+    println!("-----------------------------------------");
+    println!("rotating keys");
+    println!();
 
+    let ark_seed = ArkSeed::try_from_mnemonic(ark_details.mnemonic.clone())?;
+    let data_key = engine.rotate_data_key(&ark_seed).await?;
+    println!("new data key: {}", data_key.danger_to_string());
+    let (helm_key, worker_key) = engine.rotate_helm_key(&ark_seed).await?;
+    println!("new helm key: {}", helm_key.danger_to_string());
+    println!("new worker key: {}", worker_key.danger_to_string());
+    println!("-----------------------------------------");
     println!();
     Ok(())
 }

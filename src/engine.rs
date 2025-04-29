@@ -1,9 +1,9 @@
 use crate::crypto::{
     ArkAddress, ArkSeed, DataKey, DataKeyRing, DataKeySeed, EncryptedData,
     EncryptedScratchpadContent, HelmKey, HelmKeySeed, PlaintextScratchpad, PublicHelmKey,
-    PublicWorkerKey, ScratchpadContent, SealKey, TypedChunk, TypedChunkAddress, TypedOwnedPointer,
-    TypedOwnedRegister, TypedOwnedScratchpad, TypedPointerAddress, TypedRegisterAddress,
-    TypedScratchpadAddress, WorkerKey, WorkerKeySeed,
+    PublicWorkerKey, ScratchpadContent, SealKey, Terminable, TypedChunk, TypedChunkAddress,
+    TypedOwnedPointer, TypedOwnedRegister, TypedOwnedScratchpad, TypedPointerAddress,
+    TypedRegisterAddress, TypedScratchpadAddress, WorkerKey, WorkerKeySeed,
 };
 use crate::manifest::{Manifest, VaultConfig};
 use crate::vault::VaultId;
@@ -230,6 +230,24 @@ impl Engine {
         Ok(counter)
     }
 
+    async fn danger_terminate_scratchpad<
+        T: Clone + PartialEq,
+        V: ScratchpadContent + Terminable,
+    >(
+        &mut self,
+        owner: &TypedOwnedScratchpad<T, V>,
+    ) -> anyhow::Result<()> {
+        let pad = PlaintextScratchpad::try_from_scratchpad(
+            self.client
+                .scratchpad_get_from_public_key(owner.address().as_ref().owner())
+                .await?,
+        )?;
+        self.client
+            .scratchpad_put(pad.terminate(owner)?, self.payment())
+            .await?;
+        Ok(())
+    }
+
     async fn get_data_keyring(
         &self,
         ark_address: &ArkAddress,
@@ -288,6 +306,15 @@ impl Engine {
         Ok(ark_address.helm_key(&self.read_register(&ark_address.helm_register()).await?))
     }
 
+    /// Retrieves the latest `HelmKey` for the given `ArkSeed`.
+    async fn helm_key(&self, ark_seed: &ArkSeed) -> anyhow::Result<HelmKey> {
+        Ok(ark_seed.helm_key(
+            &self
+                .read_register(&ark_seed.helm_register().address())
+                .await?,
+        ))
+    }
+
     /// Retrieves the latest `PublicWorkerKey` for the given `ArkAddress`.
     async fn public_worker_key(&self, ark_address: &ArkAddress) -> anyhow::Result<PublicWorkerKey> {
         let helm_key = self.public_helm_key(ark_address).await?;
@@ -308,14 +335,100 @@ impl Engine {
         ))
     }
 
+    pub async fn rotate_data_key(&mut self, ark_seed: &ArkSeed) -> anyhow::Result<DataKey> {
+        let data_register = ark_seed.data_register();
+        let new_data_key_seed = DataKeySeed::random();
+        let new_data_key = ark_seed.data_key(&new_data_key_seed);
+        self.update_register(&data_register, new_data_key_seed)
+            .await?;
+
+        self.update_scratchpad(
+            new_data_key
+                .public_key()
+                .encrypt_data_keyring(&self.derive_data_keyring(&ark_seed).await?),
+            &ark_seed.data_keyring(),
+        )
+        .await?;
+
+        Ok(new_data_key)
+    }
+
+    pub async fn rotate_helm_key(
+        &mut self,
+        ark_seed: &ArkSeed,
+    ) -> anyhow::Result<(HelmKey, WorkerKey)> {
+        let previous_helm_key = self.helm_key(ark_seed).await?;
+        let previous_worker_key = self
+            .worker_key(ark_seed.address(), &previous_helm_key)
+            .await?;
+        let new_helm_key_seed = HelmKeySeed::random();
+        let new_helm_key = ark_seed.helm_key(&new_helm_key_seed);
+
+        let new_worker_key = self
+            .rotate_worker_key(&previous_helm_key, &previous_worker_key, &new_helm_key)
+            .await?;
+
+        self.update_register(&ark_seed.helm_register(), new_helm_key_seed)
+            .await?;
+
+        self.terminate_manifest(ark_seed.address(), &previous_helm_key)
+            .await?;
+
+        Ok((new_helm_key, new_worker_key))
+    }
+
+    pub async fn rotate_worker_key(
+        &mut self,
+        previous_helm_key: &HelmKey,
+        previous_worker_key: &WorkerKey,
+        new_helm_key: &HelmKey,
+    ) -> anyhow::Result<WorkerKey> {
+        let manifest = self
+            .get_specific_manifest(&previous_worker_key, previous_helm_key.public_key())
+            .await?;
+        let new_worker_key_seed = WorkerKeySeed::random();
+        let new_worker_key = new_helm_key.worker_key(&new_worker_key_seed);
+
+        if previous_helm_key == new_helm_key {
+            // Only the `WorkerKey` is rotated, nothing else
+            self.update_scratchpad(
+                new_worker_key.public_key().encrypt_manifest(&manifest),
+                &previous_helm_key.manifest(),
+            )
+            .await?;
+            self.update_register(&previous_helm_key.worker_register(), new_worker_key_seed)
+                .await?;
+        } else {
+            // Part of a bigger rotation
+            self.create_encrypted_scratchpad(
+                new_worker_key.public_key().encrypt_manifest(&manifest),
+                &new_helm_key.manifest(),
+            )
+            .await?;
+
+            self.create_register(&new_helm_key.worker_register(), new_worker_key_seed)
+                .await?;
+        }
+
+        Ok(new_worker_key)
+    }
+
     async fn get_manifest(
         &self,
         ark_address: &ArkAddress,
         worker_key: &WorkerKey,
     ) -> anyhow::Result<Manifest> {
-        let encrypted_manifest = self
-            .read_scratchpad(&self.public_helm_key(ark_address).await?.manifest())
-            .await?;
+        let public_helm_key = self.public_helm_key(ark_address).await?;
+        self.get_specific_manifest(worker_key, &public_helm_key)
+            .await
+    }
+
+    async fn get_specific_manifest(
+        &self,
+        worker_key: &WorkerKey,
+        public_helm_key: &PublicHelmKey,
+    ) -> anyhow::Result<Manifest> {
+        let encrypted_manifest = self.read_scratchpad(&public_helm_key.manifest()).await?;
         worker_key.decrypt_manifest(&encrypted_manifest)
     }
 
@@ -336,6 +449,22 @@ impl Engine {
             &helm_key.manifest(),
         )
         .await
+    }
+
+    async fn terminate_manifest(
+        &mut self,
+        ark_address: &ArkAddress,
+        helm_key: &HelmKey,
+    ) -> anyhow::Result<()> {
+        if &self.public_helm_key(&ark_address).await? == helm_key.public_key() {
+            bail!(
+                "helm_key is still active for ark [{}], cannot terminate manifest",
+                ark_address
+            )
+        };
+        self.danger_terminate_scratchpad(&helm_key.manifest())
+            .await?;
+        Ok(())
     }
 
     async fn put_chunk<T>(&mut self, chunk: &TypedChunk<T>) -> anyhow::Result<()> {
@@ -374,6 +503,17 @@ impl Engine {
         if register.address().as_ref() != &address {
             bail!("incorrect register address returned");
         }
+        Ok(())
+    }
+
+    async fn update_register<T, V: Into<RegisterValue>>(
+        &mut self,
+        register: &TypedOwnedRegister<T, V>,
+        value: V,
+    ) -> anyhow::Result<()> {
+        self.client
+            .register_update(register.owner().as_ref(), value.into(), self.payment())
+            .await?;
         Ok(())
     }
 

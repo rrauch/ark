@@ -1,4 +1,4 @@
-use crate::crypto::ArkAddress;
+use crate::crypto::{ArkAddress, Terminable};
 use crate::protos::{deserialize_with_header, serialize_with_header};
 use crate::{ArkCreationSettings, VaultCreationSettings};
 use bytes::Bytes;
@@ -18,6 +18,8 @@ pub struct Manifest {
     pub description: Option<String>,
     pub vaults: Vec<VaultConfig>,
 }
+
+impl Terminable for Manifest {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct VaultConfig {
