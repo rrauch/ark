@@ -1,16 +1,15 @@
 use autonomi::{Client, Wallet};
-use poc::{ArkCreationSettings, ArkSeed, Engine, VaultCreationSettings};
+use core::{ArkCreationSettings, ArkSeed, Core, VaultCreationSettings};
 use tracing::Level;
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let filter = EnvFilter::builder()
-        .with_default_directive(Level::INFO.into())
+        .with_default_directive(Level::ERROR.into())
         .from_env_lossy();
-    let (filter, _reload_handle) = tracing_subscriber::reload::Layer::new(filter);
 
     tracing_subscriber::registry()
         .with(filter)
@@ -22,19 +21,20 @@ async fn main() -> anyhow::Result<()> {
         client.evm_network().clone(),
         std::env::var("SECRET_KEY")?.as_str(),
     )?;
-
-    let mut engine = Engine::new(client, wallet);
-    let ark_details = engine
-        .create_ark(&ArkCreationSettings::builder().name("Test Ark").build())
-        .await?;
+    let ark_details = Core::create_ark(
+        ArkCreationSettings::builder().name("Test Ark").build(),
+        &client,
+        &wallet,
+    )
+    .await?;
 
     println!("-----------------------------------------");
     println!("New Ark Created!");
     println!();
     println!("Address: {}", ark_details.address);
-    println!("Created at: {}", ark_details.manifest.created);
-    println!("Name: {}", ark_details.manifest.name);
-    if let Some(description) = ark_details.manifest.description.as_ref() {
+    println!("Created at: {}", ark_details.ark.created);
+    println!("Name: {}", ark_details.ark.name);
+    if let Some(description) = ark_details.ark.description.as_ref() {
         println!("-----------");
         println!("{}", description);
         println!("-----------")
@@ -48,26 +48,23 @@ async fn main() -> anyhow::Result<()> {
     println!("Worker Key: {}", ark_details.worker_key.danger_to_string());
     println!("-----------------------------------------");
 
-    engine
-        .add_ark(&ark_details.address, ark_details.worker_key.clone())
-        .await?;
-
-    let vault_id = engine
+    let core = Core::new(client, wallet, ark_details.address.clone());
+    let vault_id = core
         .create_vault(
             VaultCreationSettings::builder().name("Vault 1").build(),
             &ark_details.helm_key,
-            &ark_details.address,
         )
         .await?;
+
     println!("added vault {}", vault_id);
     println!("-----------------------------------------");
     println!("rotating keys");
     println!();
 
     let ark_seed = ArkSeed::try_from_mnemonic(ark_details.mnemonic.clone())?;
-    let data_key = engine.rotate_data_key(&ark_seed).await?;
+    let data_key = core.rotate_data_key(&ark_seed).await?;
     println!("new data key: {}", data_key.danger_to_string());
-    let (helm_key, worker_key) = engine.rotate_helm_key(&ark_seed).await?;
+    let (helm_key, worker_key) = core.rotate_helm_key(&ark_seed).await?;
     println!("new helm key: {}", helm_key.danger_to_string());
     println!("new worker key: {}", worker_key.danger_to_string());
     println!("-----------------------------------------");

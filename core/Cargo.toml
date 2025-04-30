@@ -1,0 +1,29 @@
+[package]
+name = "core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = { workspace = true, features = ["backtrace"] }
+autonomi = { workspace = true }
+bech32 = { version = "0.11", features = ["alloc"] }
+bip39 = { version = "2.1", features = ["zeroize", "rand"] }
+blsttc = "8.0.2"
+bon = "3.6"
+bytes = { workspace = true }
+chrono = { workspace = true }
+once_cell = "1.21"
+prost = "0.13"
+rand = { version = "0.9", features = ["thread_rng"] }
+sn_bls_ckd = "0.2.1"
+sn_curv = { version = "0.10.1", default-features = false, features = ["num-bigint"] }
+tokio = { workspace = true, features = ["full"] }
+tracing = { workspace = true }
+uuid = { version = "1.16", features = ["v7"] }
+zeroize = "1.8"
+
+[build-dependencies]
+anyhow = "1"
+prost-build = "0.13"
+protoc-bin-vendored = "3.1"
+tokio = { version = "1.44", features = ["full"] }

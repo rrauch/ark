@@ -1,152 +1,76 @@
+mod ark;
+mod crypto;
+mod manifest;
+mod util;
+mod vault;
+
 use crate::crypto::{
-    ArkAddress, ArkSeed, DataKey, DataKeyRing, DataKeySeed, EncryptedData,
-    EncryptedScratchpadContent, HelmKey, HelmKeySeed, PlaintextScratchpad, PublicHelmKey,
-    PublicWorkerKey, ScratchpadContent, SealKey, Terminable, TypedChunk, TypedChunkAddress,
-    TypedOwnedPointer, TypedOwnedRegister, TypedOwnedScratchpad, TypedPointerAddress,
-    TypedRegisterAddress, TypedScratchpadAddress, WorkerKey, WorkerKeySeed,
+    DataKeySeed, EncryptedData, EncryptedScratchpadContent, HelmKeySeed, PlaintextScratchpad,
+    ScratchpadContent, Terminable, TypedChunk, TypedChunkAddress, TypedOwnedPointer,
+    TypedOwnedRegister, TypedOwnedScratchpad, TypedPointerAddress, TypedRegisterAddress,
+    TypedScratchpadAddress, WorkerKeySeed,
 };
-use crate::manifest::{Manifest, VaultConfig};
-use crate::vault::VaultId;
-use crate::{Ark, ArkCreationDetails, ArkCreationSettings, VaultCreationSettings};
+use crate::manifest::Manifest;
 use anyhow::{anyhow, bail};
+use std::fmt::Display;
+
+pub use crate::crypto::{
+    ArkAddress, ArkSeed, DataKey, DataKeyRing, HelmKey, PublicHelmKey, PublicWorkerKey, SealKey,
+    WorkerKey,
+};
+
+pub use crate::ark::Ark;
+pub use crate::ark::{ArkCreationDetails, ArkCreationSettings};
+pub use crate::vault::{Vault, VaultCreationSettings, VaultId};
 use autonomi::client::payment::PaymentOption;
 use autonomi::pointer::PointerTarget;
 use autonomi::register::RegisterValue;
-use autonomi::{Client, Wallet};
+pub use autonomi::{Client as AutonomiClient, Wallet as AutonomiWallet};
 use bytes::Bytes;
-use chrono::Utc;
-use std::collections::HashMap;
-use std::fmt::Display;
 
-pub struct Engine {
-    client: Client,
-    wallet: Wallet,
-    arks: HashMap<ArkAddress, Ark>,
+pub struct Core {
+    client: AutonomiClient,
+    wallet: AutonomiWallet,
+    ark_address: ArkAddress,
 }
 
-impl Engine {
-    pub fn new(client: Client, wallet: Wallet) -> Self {
+impl Core {
+    pub fn new(client: AutonomiClient, wallet: AutonomiWallet, ark_address: ArkAddress) -> Self {
         Self {
             client,
             wallet,
-            arks: Default::default(),
+            ark_address,
         }
     }
 
     pub async fn create_ark(
-        &mut self,
-        settings: &ArkCreationSettings,
+        setting: ArkCreationSettings,
+        client: &AutonomiClient,
+        wallet: &AutonomiWallet,
     ) -> anyhow::Result<ArkCreationDetails> {
-        let (ark_seed, mnemonic) = ArkSeed::random();
-        let helm_register = ark_seed.helm_register();
-        let helm_key_seed = HelmKeySeed::random();
-        self.create_register(&helm_register, helm_key_seed.clone())
-            .await?;
-        let helm_key = ark_seed.helm_key(&helm_key_seed);
-
-        let data_register = ark_seed.data_register();
-        let data_key_seed = DataKeySeed::random();
-        self.create_register(&data_register, data_key_seed.clone())
-            .await?;
-        let data_key = ark_seed.data_key(&data_key_seed);
-
-        self.create_encrypted_scratchpad(
-            data_key
-                .public_key()
-                .encrypt_data_keyring(&self.derive_data_keyring(&ark_seed).await?),
-            &ark_seed.data_keyring(),
-        )
-        .await?;
-
-        let worker_register = helm_key.worker_register();
-        let worker_key_seed = WorkerKeySeed::random();
-        self.create_register(&worker_register, worker_key_seed.clone())
-            .await?;
-        let worker_key = helm_key.worker_key(&worker_key_seed);
-
-        let ark_address = ark_seed.address();
-        let manifest = Manifest::new(&ark_address, settings);
-        self.create_encrypted_scratchpad(
-            worker_key.public_key().encrypt_manifest(&manifest),
-            &helm_key.manifest(),
-        )
-        .await?;
-
-        Ok(ArkCreationDetails {
-            address: ark_address.clone(),
-            mnemonic,
-            helm_key,
-            data_key,
-            worker_key,
-            manifest,
-        })
-    }
-
-    pub async fn add_ark(
-        &mut self,
-        address: &ArkAddress,
-        worker_key: WorkerKey,
-    ) -> anyhow::Result<()> {
-        if self.arks.contains_key(address) {
-            bail!("ark already registered");
-        }
-        self.verify_worker_key(&worker_key, address).await?;
-        let manifest = self.get_manifest(address, &worker_key).await?;
-        self.arks
-            .insert(address.clone(), Ark::new(manifest, worker_key));
-        Ok(())
+        Ark::create(setting, client, wallet).await
     }
 
     pub async fn create_vault(
-        &mut self,
+        &self,
         settings: VaultCreationSettings,
         helm_key: &HelmKey,
-        ark_address: &ArkAddress,
     ) -> anyhow::Result<VaultId> {
-        if !self.arks.contains_key(ark_address) {
-            bail!("ark [{}] unknown", ark_address);
-        }
-        self.verify_helm_key(helm_key, ark_address).await?;
-        let worker_key = self.worker_key(ark_address, helm_key).await?;
-        let mut manifest = self.get_manifest(ark_address, &worker_key).await?;
-        let vault_config = VaultConfig::from(settings);
-        let id = vault_config.id;
-        manifest.vaults.push(vault_config.clone());
-        manifest.last_modified = Utc::now();
-        self.update_manifest(&manifest, ark_address, helm_key)
-            .await?;
-        self.refresh_from_manifest(manifest).await?;
-        Ok(id)
-    }
-
-    async fn refresh_from_manifest(&mut self, manifest: Manifest) -> anyhow::Result<usize> {
-        let ark = self
-            .arks
-            .get_mut(&manifest.ark_address)
-            .ok_or(anyhow!("ark [{}] not found", &manifest.ark_address))?;
-
-        let changes = ark.apply_manifest(manifest);
-
-        if changes > 0 {
-            tracing::info!(
-                num_changes = changes,
-                ark_address = %ark.address,
-                "detected and applied ark changes"
-            );
-        } else {
-            tracing::debug!(
-                ark_address = %ark.address,
-                "no ark changes detected"
-            )
-        }
-
-        Ok(changes)
+        Vault::create(
+            settings,
+            &self.ark_address,
+            helm_key,
+            &self.client,
+            &self.wallet,
+        )
+        .await
     }
 
     /// Does a full refresh of the data keyring.
-    pub async fn update_data_keyring(&mut self, ark_seed: &ArkSeed) -> anyhow::Result<u64> {
+    pub async fn update_data_keyring(&self, ark_seed: &ArkSeed) -> anyhow::Result<u64> {
+        self.verify_ark_seed(ark_seed)?;
         self.update_scratchpad(
-            self.seal_key(ark_seed.address())
+            self.seal_key()
                 .await?
                 .encrypt_data_keyring(&self.derive_data_keyring(&ark_seed).await?),
             &ark_seed.data_keyring(),
@@ -156,6 +80,7 @@ impl Engine {
 
     /// Retrieves the **FULL** data key history given a valid `ArkSeed`.
     async fn derive_data_keyring(&self, ark_seed: &ArkSeed) -> anyhow::Result<DataKeyRing> {
+        self.verify_ark_seed(ark_seed)?;
         let keyring: DataKeyRing = self
             .register_history(&ark_seed.public_key().data_register())
             .await?
@@ -170,7 +95,7 @@ impl Engine {
 
     /// Creates a new **ENCRYPTED** scratchpad owned by the given owner yet readable by `R`.
     async fn create_encrypted_scratchpad<O: Clone + PartialEq, R, V: ScratchpadContent>(
-        &mut self,
+        &self,
         encrypted_content: EncryptedScratchpadContent<R, V>,
         owner: &TypedOwnedScratchpad<O, EncryptedData<R, V>>,
     ) -> anyhow::Result<()> {
@@ -179,7 +104,7 @@ impl Engine {
 
     /// Creates a new **PLAINTEXT** scratchpad owned by the given owner.
     async fn create_scratchpad<T: Clone + PartialEq, V: ScratchpadContent>(
-        &mut self,
+        &self,
         content: V,
         owner: &TypedOwnedScratchpad<T, V>,
     ) -> anyhow::Result<()> {
@@ -214,7 +139,7 @@ impl Engine {
     }
 
     async fn update_scratchpad<T: Clone + PartialEq, V: ScratchpadContent>(
-        &mut self,
+        &self,
         content: V,
         owner: &TypedOwnedScratchpad<T, V>,
     ) -> anyhow::Result<u64> {
@@ -234,7 +159,7 @@ impl Engine {
         T: Clone + PartialEq,
         V: ScratchpadContent + Terminable,
     >(
-        &mut self,
+        &self,
         owner: &TypedOwnedScratchpad<T, V>,
     ) -> anyhow::Result<()> {
         let pad = PlaintextScratchpad::try_from_scratchpad(
@@ -248,65 +173,68 @@ impl Engine {
         Ok(())
     }
 
-    async fn get_data_keyring(
-        &self,
-        ark_address: &ArkAddress,
-        data_key: &DataKey,
-    ) -> anyhow::Result<DataKeyRing> {
-        self.verify_data_key(data_key, ark_address).await?;
-        data_key.decrypt_data_keyring(&self.read_scratchpad(&ark_address.data_keyring()).await?)
+    async fn get_data_keyring(&self, data_key: &DataKey) -> anyhow::Result<DataKeyRing> {
+        self.verify_data_key(data_key).await?;
+        data_key.decrypt_data_keyring(
+            &self
+                .read_scratchpad(&self.ark_address.data_keyring())
+                .await?,
+        )
+    }
+
+    fn verify_ark_seed(&self, ark_seed: &ArkSeed) -> anyhow::Result<()> {
+        if &self.ark_address != ark_seed.address() {
+            bail!("ark_seed not valid for ark_address [{}]", self.ark_address);
+        }
+        Ok(())
     }
 
     /// Verify the given `worker_key` against the Ark.
     /// Ensures the key is the current, active one for the Ark.
-    async fn verify_worker_key(
-        &self,
-        worker_key: &WorkerKey,
-        ark_address: &ArkAddress,
-    ) -> anyhow::Result<()> {
-        if &self.public_worker_key(ark_address).await? != worker_key.public_key() {
-            bail!("worker_key not valid for ark [{}]", ark_address)
+    async fn verify_worker_key(&self, worker_key: &WorkerKey) -> anyhow::Result<()> {
+        if &self.public_worker_key().await? != worker_key.public_key() {
+            bail!("worker_key not valid for ark [{}]", self.ark_address)
         }
         Ok(())
     }
 
     /// Verify the given `helm_key` against the Ark.
     /// Ensures the key is the current, active one for the Ark.
-    async fn verify_helm_key(
-        &self,
-        helm_key: &HelmKey,
-        ark_address: &ArkAddress,
-    ) -> anyhow::Result<()> {
-        if &self.public_helm_key(&ark_address).await? != helm_key.public_key() {
-            bail!("helm_key not valid for ark [{}]", ark_address)
+    async fn verify_helm_key(&self, helm_key: &HelmKey) -> anyhow::Result<()> {
+        if &self.public_helm_key().await? != helm_key.public_key() {
+            bail!("helm_key not valid for ark [{}]", self.ark_address)
         }
         Ok(())
     }
 
     /// Verify the given `data_key` against the Ark.
     /// Ensures the key is the current, active one for the Ark.
-    async fn verify_data_key(
-        &self,
-        data_key: &DataKey,
-        ark_address: &ArkAddress,
-    ) -> anyhow::Result<()> {
-        if &self.seal_key(&ark_address).await? != data_key.public_key() {
-            bail!("data_key not valid for ark [{}]", ark_address)
+    async fn verify_data_key(&self, data_key: &DataKey) -> anyhow::Result<()> {
+        if &self.seal_key().await? != data_key.public_key() {
+            bail!("data_key not valid for ark [{}]", self.ark_address)
         }
         Ok(())
     }
 
-    /// Retrieves the latest `SealKey` for the given `ArkAddress`.
-    async fn seal_key(&self, ark_address: &ArkAddress) -> anyhow::Result<SealKey> {
-        Ok(ark_address.seal_key(&self.read_register(&ark_address.data_register()).await?))
+    /// Retrieves the active `SealKey`.
+    async fn seal_key(&self) -> anyhow::Result<SealKey> {
+        Ok(self.ark_address.seal_key(
+            &self
+                .read_register(&self.ark_address.data_register())
+                .await?,
+        ))
     }
 
-    /// Retrieves the latest `PublicHelmKey` for the given `ArkAddress`.
-    async fn public_helm_key(&self, ark_address: &ArkAddress) -> anyhow::Result<PublicHelmKey> {
-        Ok(ark_address.helm_key(&self.read_register(&ark_address.helm_register()).await?))
+    /// Retrieves the active `PublicHelmKey`.
+    async fn public_helm_key(&self) -> anyhow::Result<PublicHelmKey> {
+        Ok(self.ark_address.helm_key(
+            &self
+                .read_register(&self.ark_address.helm_register())
+                .await?,
+        ))
     }
 
-    /// Retrieves the latest `HelmKey` for the given `ArkSeed`.
+    /// Retrieves the active `HelmKey`.
     async fn helm_key(&self, ark_seed: &ArkSeed) -> anyhow::Result<HelmKey> {
         Ok(ark_seed.helm_key(
             &self
@@ -315,19 +243,15 @@ impl Engine {
         ))
     }
 
-    /// Retrieves the latest `PublicWorkerKey` for the given `ArkAddress`.
-    async fn public_worker_key(&self, ark_address: &ArkAddress) -> anyhow::Result<PublicWorkerKey> {
-        let helm_key = self.public_helm_key(ark_address).await?;
+    /// Retrieves the active `PublicWorkerKey`.
+    async fn public_worker_key(&self) -> anyhow::Result<PublicWorkerKey> {
+        let helm_key = self.public_helm_key().await?;
         Ok(helm_key.worker_key(&self.read_register(&helm_key.worker_register()).await?))
     }
 
-    /// Retrieves the latest secret `WorkerKey` for the given `ArkAddress`.
-    async fn worker_key(
-        &self,
-        ark_address: &ArkAddress,
-        helm_key: &HelmKey,
-    ) -> anyhow::Result<WorkerKey> {
-        self.verify_helm_key(helm_key, ark_address).await?;
+    /// Retrieves the active secret `WorkerKey`.
+    async fn worker_key(&self, helm_key: &HelmKey) -> anyhow::Result<WorkerKey> {
+        self.verify_helm_key(helm_key).await?;
         Ok(helm_key.worker_key(
             &self
                 .read_register(&helm_key.public_key().worker_register())
@@ -335,7 +259,8 @@ impl Engine {
         ))
     }
 
-    pub async fn rotate_data_key(&mut self, ark_seed: &ArkSeed) -> anyhow::Result<DataKey> {
+    pub async fn rotate_data_key(&self, ark_seed: &ArkSeed) -> anyhow::Result<DataKey> {
+        self.verify_ark_seed(ark_seed)?;
         let data_register = ark_seed.data_register();
         let new_data_key_seed = DataKeySeed::random();
         let new_data_key = ark_seed.data_key(&new_data_key_seed);
@@ -354,31 +279,34 @@ impl Engine {
     }
 
     pub async fn rotate_helm_key(
-        &mut self,
+        &self,
         ark_seed: &ArkSeed,
     ) -> anyhow::Result<(HelmKey, WorkerKey)> {
+        self.verify_ark_seed(ark_seed)?;
         let previous_helm_key = self.helm_key(ark_seed).await?;
-        let previous_worker_key = self
-            .worker_key(ark_seed.address(), &previous_helm_key)
-            .await?;
+        let previous_worker_key = self.worker_key(&previous_helm_key).await?;
         let new_helm_key_seed = HelmKeySeed::random();
         let new_helm_key = ark_seed.helm_key(&new_helm_key_seed);
 
         let new_worker_key = self
-            .rotate_worker_key(&previous_helm_key, &previous_worker_key, &new_helm_key)
+            ._rotate_worker_key(&previous_helm_key, &previous_worker_key, &new_helm_key)
             .await?;
 
         self.update_register(&ark_seed.helm_register(), new_helm_key_seed)
             .await?;
 
-        self.terminate_manifest(ark_seed.address(), &previous_helm_key)
-            .await?;
+        self.terminate_manifest(&previous_helm_key).await?;
 
         Ok((new_helm_key, new_worker_key))
     }
 
-    pub async fn rotate_worker_key(
-        &mut self,
+    pub async fn rotate_worker_key(&self, helm_key: &HelmKey) -> anyhow::Result<WorkerKey> {
+        self._rotate_worker_key(helm_key, &self.worker_key(&helm_key).await?, helm_key)
+            .await
+    }
+
+    async fn _rotate_worker_key(
+        &self,
         previous_helm_key: &HelmKey,
         previous_worker_key: &WorkerKey,
         new_helm_key: &HelmKey,
@@ -413,12 +341,8 @@ impl Engine {
         Ok(new_worker_key)
     }
 
-    async fn get_manifest(
-        &self,
-        ark_address: &ArkAddress,
-        worker_key: &WorkerKey,
-    ) -> anyhow::Result<Manifest> {
-        let public_helm_key = self.public_helm_key(ark_address).await?;
+    async fn get_manifest(&self, worker_key: &WorkerKey) -> anyhow::Result<Manifest> {
+        let public_helm_key = self.public_helm_key().await?;
         self.get_specific_manifest(worker_key, &public_helm_key)
             .await
     }
@@ -433,33 +357,26 @@ impl Engine {
     }
 
     async fn update_manifest(
-        &mut self,
+        &self,
         manifest: &Manifest,
-        ark_address: &ArkAddress,
         helm_key: &HelmKey,
     ) -> anyhow::Result<u64> {
-        if &manifest.ark_address != ark_address {
+        if &manifest.ark_address != &self.ark_address {
             bail!("manifest ark address does not match given ark address");
         }
-        self.verify_helm_key(helm_key, ark_address).await?;
+        self.verify_helm_key(helm_key).await?;
         self.update_scratchpad(
-            self.public_worker_key(ark_address)
-                .await?
-                .encrypt_manifest(&manifest),
+            self.public_worker_key().await?.encrypt_manifest(&manifest),
             &helm_key.manifest(),
         )
         .await
     }
 
-    async fn terminate_manifest(
-        &mut self,
-        ark_address: &ArkAddress,
-        helm_key: &HelmKey,
-    ) -> anyhow::Result<()> {
-        if &self.public_helm_key(&ark_address).await? == helm_key.public_key() {
+    async fn terminate_manifest(&self, helm_key: &HelmKey) -> anyhow::Result<()> {
+        if &self.public_helm_key().await? == helm_key.public_key() {
             bail!(
                 "helm_key is still active for ark [{}], cannot terminate manifest",
-                ark_address
+                self.ark_address
             )
         };
         self.danger_terminate_scratchpad(&helm_key.manifest())
@@ -467,7 +384,7 @@ impl Engine {
         Ok(())
     }
 
-    async fn put_chunk<T>(&mut self, chunk: &TypedChunk<T>) -> anyhow::Result<()> {
+    async fn put_chunk<T>(&self, chunk: &TypedChunk<T>) -> anyhow::Result<()> {
         let address = self
             .client
             .chunk_put(chunk.as_ref(), self.payment())
@@ -491,7 +408,7 @@ impl Engine {
     }
 
     async fn create_register<T, V: Into<RegisterValue>>(
-        &mut self,
+        &self,
         register: &TypedOwnedRegister<T, V>,
         value: V,
     ) -> anyhow::Result<()> {
@@ -507,7 +424,7 @@ impl Engine {
     }
 
     async fn update_register<T, V: Into<RegisterValue>>(
-        &mut self,
+        &self,
         register: &TypedOwnedRegister<T, V>,
         value: V,
     ) -> anyhow::Result<()> {
@@ -549,7 +466,7 @@ impl Engine {
     }
 
     async fn create_pointer<T, V: Into<PointerTarget>>(
-        &mut self,
+        &self,
         pointer: &TypedOwnedPointer<T, V>,
         value: V,
     ) -> anyhow::Result<()> {
@@ -565,7 +482,7 @@ impl Engine {
     }
 
     async fn update_pointer<T, V: Into<PointerTarget>>(
-        &mut self,
+        &self,
         pointer: &TypedOwnedPointer<T, V>,
         value: V,
     ) -> anyhow::Result<()> {
@@ -592,5 +509,147 @@ impl Engine {
 
     fn payment(&self) -> PaymentOption {
         PaymentOption::Wallet(self.wallet.clone())
+    }
+}
+
+mod protos {
+    use crate::crypto::ArkAddress;
+    use anyhow::{Context, anyhow, bail};
+    use bytes::{Buf, BufMut, Bytes, BytesMut};
+    use chrono::{DateTime, Utc};
+    use prost::Message;
+    use std::str::FromStr;
+
+    include!(concat!(env!("OUT_DIR"), "/protos/common.rs"));
+
+    impl From<ArkAddress> for Address {
+        fn from(value: ArkAddress) -> Self {
+            Self {
+                bech32: value.to_string(),
+            }
+        }
+    }
+
+    impl TryFrom<Address> for ArkAddress {
+        type Error = anyhow::Error;
+
+        fn try_from(value: Address) -> Result<Self, Self::Error> {
+            ArkAddress::from_str(value.bech32.as_str())
+        }
+    }
+
+    impl From<DateTime<Utc>> for Timestamp {
+        fn from(value: DateTime<Utc>) -> Self {
+            Self {
+                seconds: value.timestamp(),
+                nanos: value.timestamp_subsec_nanos(),
+            }
+        }
+    }
+
+    impl TryFrom<Timestamp> for DateTime<Utc> {
+        type Error = anyhow::Error;
+
+        fn try_from(value: Timestamp) -> Result<Self, Self::Error> {
+            DateTime::from_timestamp(value.seconds, value.nanos).ok_or(anyhow!("invalid timestamp"))
+        }
+    }
+
+    impl From<&uuid::Uuid> for Uuid {
+        fn from(value: &uuid::Uuid) -> Self {
+            let (most_significant, least_significant) = value.as_u64_pair();
+            Self {
+                most_significant,
+                least_significant,
+            }
+        }
+    }
+
+    impl From<uuid::Uuid> for Uuid {
+        fn from(value: uuid::Uuid) -> Self {
+            From::from(&value)
+        }
+    }
+
+    impl From<&Uuid> for uuid::Uuid {
+        fn from(value: &Uuid) -> Self {
+            Self::from_u64_pair(value.most_significant, value.least_significant)
+        }
+    }
+
+    impl From<Uuid> for uuid::Uuid {
+        fn from(value: Uuid) -> Self {
+            From::from(&value)
+        }
+    }
+
+    /// Serializes a Protobuf message by prepending a fixed magic number header.
+    ///
+    /// # Arguments
+    /// * `message`: The Protobuf message to serialize.
+    /// * `magic_number`: The byte slice representing the magic number to prepend.
+    ///
+    /// # Returns
+    /// * `Bytes` containing the header followed by the encoded message.
+    pub(crate) fn serialize_with_header<M, H>(message: &M, magic_number: H) -> Bytes
+    where
+        M: Message,
+        H: AsRef<[u8]>,
+    {
+        let magic_bytes = magic_number.as_ref();
+        let header_len = magic_bytes.len();
+        let msg_len = message.encoded_len();
+        let total_len = header_len + msg_len;
+        let mut buf = BytesMut::with_capacity(total_len);
+
+        buf.put(magic_bytes);
+        message
+            .encode(&mut buf)
+            .expect("Encoding to BytesMut with sufficient capacity should not fail");
+
+        buf.freeze()
+    }
+
+    /// Deserializes data into a Protobuf message, expecting a fixed magic number header.
+    ///
+    /// # Arguments
+    /// * `data`: The raw byte slice containing the header and message.
+    /// * `magic_number`: The expected magic number byte slice.
+    ///
+    /// # Type Parameters
+    /// * `T`: The target Protobuf message type (must implement `prost::Message` and `Default`).
+    ///
+    /// # Returns
+    /// * `Result<T>` containing the decoded Protobuf message or an error.
+    pub(crate) fn deserialize_with_header<T, H>(
+        data: impl AsRef<[u8]>,
+        magic_number: H,
+    ) -> anyhow::Result<T>
+    where
+        T: Message + Default,
+        H: AsRef<[u8]>,
+    {
+        let mut buf = data.as_ref();
+        let magic_bytes = magic_number.as_ref();
+        let header_len = magic_bytes.len();
+
+        if buf.len() < header_len {
+            bail!(
+                "data too short ({} bytes) to contain header ({} bytes)",
+                buf.len(),
+                header_len
+            );
+        }
+
+        // Check the header without consuming the original buffer reference yet
+        if &buf[..header_len] != magic_bytes {
+            bail!("invalid data format: header mismatch");
+        }
+
+        // Advance the buffer reference *past* the header for decoding
+        buf.advance(header_len);
+
+        // Decode the *remaining* part of the buffer
+        T::decode(buf).context("failed to decode Protobuf message after header")
     }
 }

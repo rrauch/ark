@@ -1,6 +1,7 @@
+use crate::ark::ArkCreationSettings;
 use crate::crypto::{ArkAddress, Terminable};
 use crate::protos::{deserialize_with_header, serialize_with_header};
-use crate::{ArkCreationSettings, VaultCreationSettings};
+use crate::vault::{VaultConfig, VaultCreationSettings};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -21,16 +22,6 @@ pub struct Manifest {
 
 impl Terminable for Manifest {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct VaultConfig {
-    pub id: Uuid,
-    pub created: DateTime<Utc>,
-    pub last_modified: DateTime<Utc>,
-    pub name: String,
-    pub description: Option<String>,
-    pub active: bool,
-}
-
 impl From<VaultCreationSettings> for VaultConfig {
     fn from(value: VaultCreationSettings) -> Self {
         Self {
@@ -45,13 +36,13 @@ impl From<VaultCreationSettings> for VaultConfig {
 }
 
 impl Manifest {
-    pub(super) fn new(address: &ArkAddress, settings: &ArkCreationSettings) -> Self {
+    pub(super) fn new(address: &ArkAddress, settings: ArkCreationSettings) -> Self {
         Self {
             ark_address: address.clone(),
             created: Utc::now(),
             last_modified: Utc::now(),
-            name: settings.name.clone(),
-            description: settings.description.clone(),
+            name: settings.name,
+            description: settings.description,
             vaults: Default::default(),
         }
     }
