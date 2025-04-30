@@ -49,7 +49,11 @@ async fn main() -> anyhow::Result<()> {
     println!("Worker Key: {}", ark_details.worker_key.danger_to_string());
     println!("-----------------------------------------");
 
-    let core = Core::new(client, wallet, ark_details.address.clone());
+    let core = Core::builder()
+        .ark_address(ark_details.address.clone())
+        .client(client)
+        .wallet(wallet)
+        .build();
     let (vault_id, r) = core
         .create_vault(
             VaultCreationSettings::builder().name("Vault 1").build(),

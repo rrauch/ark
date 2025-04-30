@@ -1,5 +1,5 @@
-use crate::crypto::{ArkAddress, HelmKey};
-use crate::{AutonomiClient, AutonomiWallet, Core, Receipt};
+use crate::crypto::HelmKey;
+use crate::{Core, Receipt};
 use bon::Builder;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -19,13 +19,10 @@ pub struct Vault {
 impl Vault {
     pub(crate) async fn create(
         settings: VaultCreationSettings,
-        ark_address: &ArkAddress,
         helm_key: &HelmKey,
-        client: &AutonomiClient,
-        wallet: &AutonomiWallet,
+        core: &Core,
         receipt: &mut Receipt,
     ) -> anyhow::Result<VaultId> {
-        let core = Core::new(client.clone(), wallet.clone(), ark_address.clone());
         core.verify_helm_key(helm_key).await?;
         let worker_key = core.worker_key(helm_key).await?;
         let mut manifest = core.get_manifest(&worker_key).await?;

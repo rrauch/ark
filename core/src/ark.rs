@@ -49,7 +49,11 @@ impl Ark {
         receipt: &mut Receipt,
     ) -> anyhow::Result<ArkCreationDetails> {
         let (ark_seed, mnemonic) = ArkSeed::random();
-        let core = Core::new(client.clone(), wallet.clone(), ark_seed.address().clone());
+        let core = Core::builder()
+            .ark_address(ark_seed.address().clone())
+            .client(client.clone())
+            .wallet(wallet.clone())
+            .build();
 
         let helm_register = ark_seed.helm_register();
         let helm_key_seed = HelmKeySeed::random();

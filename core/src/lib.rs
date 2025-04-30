@@ -4,6 +4,8 @@ mod manifest;
 mod util;
 mod vault;
 
+pub use crate::ark::Ark;
+pub use crate::ark::{ArkCreationDetails, ArkCreationSettings};
 pub use crate::crypto::{
     ArkAddress, ArkSeed, DataKey, DataKeyRing, HelmKey, PublicHelmKey, PublicWorkerKey, SealKey,
     WorkerKey,
@@ -15,20 +17,20 @@ use crate::crypto::{
     TypedScratchpadAddress, WorkerKeySeed,
 };
 use crate::manifest::Manifest;
-use anyhow::{anyhow, bail};
-use std::fmt::Display;
-use std::ops::AddAssign;
-
-pub use crate::ark::Ark;
-pub use crate::ark::{ArkCreationDetails, ArkCreationSettings};
 pub use crate::vault::{Vault, VaultCreationSettings, VaultId};
-use autonomi::AttoTokens;
+use anyhow::{anyhow, bail};
 use autonomi::client::payment::PaymentOption;
 use autonomi::pointer::PointerTarget;
-use autonomi::register::RegisterValue;
+use autonomi::register::{RegisterAddress, RegisterValue};
+use autonomi::{AttoTokens, Pointer, PointerAddress, Scratchpad, ScratchpadAddress};
 pub use autonomi::{Client as AutonomiClient, Wallet as AutonomiWallet};
+use bon::bon;
 use bytes::Bytes;
 pub use chrono::{DateTime, Utc};
+use moka::future::Cache;
+use std::fmt::Display;
+use std::ops::AddAssign;
+use std::time::Duration;
 
 pub struct LineItem {
     cost: AttoTokens,
@@ -93,14 +95,55 @@ pub struct Core {
     client: AutonomiClient,
     wallet: AutonomiWallet,
     ark_address: ArkAddress,
+    register_cache: Cache<RegisterAddress, RegisterValue>,
+    register_history_cache: Cache<RegisterAddress, Vec<RegisterValue>>,
+    pointer_cache: Cache<PointerAddress, Pointer>,
+    scratchpad_cache: Cache<ScratchpadAddress, Scratchpad>,
 }
 
+#[bon]
 impl Core {
-    pub fn new(client: AutonomiClient, wallet: AutonomiWallet, ark_address: ArkAddress) -> Self {
+    #[builder]
+    pub fn new(
+        client: AutonomiClient,
+        wallet: AutonomiWallet,
+        ark_address: ArkAddress,
+        #[builder(default = Duration::from_secs(3600))] cache_ttl: Duration,
+        #[builder(default = Duration::from_secs(900))] cache_tti: Duration,
+        #[builder(default = 1000)] register_cache_capacity: u64,
+        #[builder(default = 200)] register_history_cache_capacity: u64,
+        #[builder(default = 1000)] pointer_cache_capacity: u64,
+        #[builder(default = 1024 * 1024 * 8)] scratchpad_cache_capacity: u64,
+    ) -> Self {
         Self {
             client,
             wallet,
             ark_address,
+            register_cache: Cache::builder()
+                .name("register_cache")
+                .time_to_live(cache_ttl)
+                .time_to_idle(cache_tti)
+                .max_capacity(register_cache_capacity)
+                .build(),
+            register_history_cache: Cache::builder()
+                .name("register_history_cache")
+                .time_to_live(cache_ttl)
+                .time_to_idle(cache_tti)
+                .max_capacity(register_history_cache_capacity)
+                .build(),
+            pointer_cache: Cache::builder()
+                .name("pointer_cache")
+                .time_to_live(cache_ttl)
+                .time_to_idle(cache_tti)
+                .max_capacity(pointer_cache_capacity)
+                .build(),
+            scratchpad_cache: Cache::builder()
+                .name("scratchpad_cache")
+                .time_to_live(cache_ttl)
+                .time_to_idle(cache_tti)
+                .max_capacity(scratchpad_cache_capacity)
+                .weigher(|_, pad: &Scratchpad| pad.size() as u32)
+                .build(),
         }
     }
 
@@ -117,18 +160,8 @@ impl Core {
         settings: VaultCreationSettings,
         helm_key: &HelmKey,
     ) -> Result<VaultId> {
-        with_receipt(async move |receipt| {
-            Vault::create(
-                settings,
-                &self.ark_address,
-                helm_key,
-                &self.client,
-                &self.wallet,
-                receipt,
-            )
+        with_receipt(async move |receipt| Vault::create(settings, helm_key, &self, receipt).await)
             .await
-        })
-        .await
     }
 
     /// Does a full refresh of the data keyring.
@@ -182,15 +215,17 @@ impl Core {
     ) -> anyhow::Result<()> {
         let pad = PlaintextScratchpad::new_from_value(content, owner.owner().public_key().clone())
             .try_into_scratchpad(owner)?;
-        if self
-            .client
-            .scratchpad_check_existance(pad.address())
-            .await?
+        if self.scratchpad_cache.contains_key(pad.address())
+            || self
+                .client
+                .scratchpad_check_existance(pad.address())
+                .await?
         {
             bail!("scratchpad already exists");
         }
         let (attos, address) = self.client.scratchpad_put(pad, self.payment()).await?;
         receipt.add(attos);
+        self.scratchpad_cache.invalidate(&address).await;
 
         if &address != owner.address().as_ref() {
             bail!("incorrect scratchpad address returned");
@@ -205,11 +240,18 @@ impl Core {
     where
         <V as TryFrom<Bytes>>::Error: Display,
     {
-        let pad = self
-            .client
-            .scratchpad_get_from_public_key(address.as_ref().owner())
-            .await?;
+        let pad = self._scratchpad_get(address.as_ref()).await?;
         Ok(PlaintextScratchpad::<T, V>::try_from_scratchpad(pad)?.try_into_inner()?)
+    }
+
+    async fn _scratchpad_get(&self, address: &ScratchpadAddress) -> anyhow::Result<Scratchpad> {
+        self.scratchpad_cache
+            .try_get_with_by_ref(
+                address,
+                self.client.scratchpad_get_from_public_key(address.owner()),
+            )
+            .await
+            .map_err(|e| e.into())
     }
 
     async fn update_scratchpad<T: Clone + PartialEq, V: ScratchpadContent>(
@@ -219,16 +261,15 @@ impl Core {
         receipt: &mut Receipt,
     ) -> anyhow::Result<u64> {
         let mut pad = PlaintextScratchpad::try_from_scratchpad(
-            self.client
-                .scratchpad_get_from_public_key(owner.address().as_ref().owner())
-                .await?,
+            self._scratchpad_get(owner.address().as_ref()).await?,
         )?;
         let counter = pad.update(content)?;
-        let (attos, _) = self
+        let (attos, address) = self
             .client
             .scratchpad_put(pad.try_into_scratchpad(owner)?, self.payment())
             .await?;
         receipt.add(attos);
+        self.scratchpad_cache.invalidate(&address).await;
         Ok(counter)
     }
 
@@ -241,15 +282,14 @@ impl Core {
         receipt: &mut Receipt,
     ) -> anyhow::Result<()> {
         let pad = PlaintextScratchpad::try_from_scratchpad(
-            self.client
-                .scratchpad_get_from_public_key(owner.address().as_ref().owner())
-                .await?,
+            self._scratchpad_get(owner.address().as_ref()).await?,
         )?;
-        let (attos, _) = self
+        let (attos, address) = self
             .client
             .scratchpad_put(pad.terminate(owner)?, self.payment())
             .await?;
         receipt.add(attos);
+        self.scratchpad_cache.invalidate(&address).await;
         Ok(())
     }
 
@@ -536,6 +576,8 @@ impl Core {
             .register_create(register.owner().as_ref(), value.into(), self.payment())
             .await?;
         receipt.add(attos);
+        self.register_cache.invalidate(&address).await;
+        self.register_history_cache.invalidate(&address).await;
         if register.address().as_ref() != &address {
             bail!("incorrect register address returned");
         }
@@ -553,6 +595,9 @@ impl Core {
             .register_update(register.owner().as_ref(), value.into(), self.payment())
             .await?;
         receipt.add(attos);
+        let address = register.address().as_ref();
+        self.register_cache.invalidate(address).await;
+        self.register_history_cache.invalidate(address).await;
         Ok(())
     }
 
@@ -564,10 +609,16 @@ impl Core {
         <V as TryFrom<RegisterValue>>::Error: Display,
     {
         Ok(self
-            .client
-            .register_get(address.as_ref())
+            ._register_get(address.as_ref())
             .await
             .map(|v| V::try_from(v).map_err(|e| anyhow!("{}", e)))??)
+    }
+
+    async fn _register_get(&self, address: &RegisterAddress) -> anyhow::Result<RegisterValue> {
+        self.register_cache
+            .try_get_with_by_ref(address, self.client.register_get(address))
+            .await
+            .map_err(|e| e.into())
     }
 
     async fn register_history<T, V: TryFrom<RegisterValue>>(
@@ -578,13 +629,21 @@ impl Core {
         <V as TryFrom<RegisterValue>>::Error: Display,
     {
         Ok(self
-            .client
-            .register_history(address.as_ref())
-            .collect()
+            ._register_history(address.as_ref())
             .await?
             .into_iter()
             .map(|v| V::try_from(v).map_err(|e| anyhow!("{}", e)))
             .collect::<anyhow::Result<Vec<_>>>()?)
+    }
+
+    async fn _register_history(
+        &self,
+        address: &RegisterAddress,
+    ) -> anyhow::Result<Vec<RegisterValue>> {
+        self.register_history_cache
+            .try_get_with_by_ref(address, self.client.register_history(address).collect())
+            .await
+            .map_err(|e| e.into())
     }
 
     async fn create_pointer<T, V: Into<PointerTarget>>(
@@ -598,6 +657,7 @@ impl Core {
             .pointer_create(pointer.owner().as_ref(), value.into(), self.payment())
             .await?;
         receipt.add(attos);
+        self.pointer_cache.invalidate(&address).await;
         if pointer.address().as_ref() != &address {
             bail!("incorrect pointer address returned");
         }
@@ -612,6 +672,9 @@ impl Core {
         self.client
             .pointer_update(pointer.owner().as_ref(), value.into())
             .await?;
+        self.pointer_cache
+            .invalidate(pointer.address().as_ref())
+            .await;
         Ok(())
     }
 
@@ -622,12 +685,19 @@ impl Core {
     where
         <V as TryFrom<Bytes>>::Error: Display,
     {
-        let address = match self.client.pointer_get(address.as_ref()).await?.target() {
+        let address = match self._pointer_get(address.as_ref()).await?.target() {
             PointerTarget::ChunkAddress(address) => address.clone(),
-            _ => bail!("pointer does not point  to chunk"),
+            _ => bail!("pointer does not point to chunk"),
         };
         let address = TypedChunkAddress::new(address);
         self.get_chunk(&address).await
+    }
+
+    async fn _pointer_get(&self, address: &PointerAddress) -> anyhow::Result<Pointer> {
+        self.pointer_cache
+            .try_get_with_by_ref(address, self.client.pointer_get(address))
+            .await
+            .map_err(|e| e.into())
     }
 
     fn payment(&self) -> PaymentOption {
