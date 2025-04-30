@@ -1,5 +1,5 @@
 use crate::crypto::{ArkAddress, HelmKey};
-use crate::{AutonomiClient, AutonomiWallet, Core};
+use crate::{AutonomiClient, AutonomiWallet, Core, Receipt};
 use bon::Builder;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -23,6 +23,7 @@ impl Vault {
         helm_key: &HelmKey,
         client: &AutonomiClient,
         wallet: &AutonomiWallet,
+        receipt: &mut Receipt,
     ) -> anyhow::Result<VaultId> {
         let core = Core::new(client.clone(), wallet.clone(), ark_address.clone());
         core.verify_helm_key(helm_key).await?;
@@ -32,7 +33,7 @@ impl Vault {
         let id = vault_config.id;
         manifest.vaults.push(vault_config.clone());
         manifest.last_modified = Utc::now();
-        core.update_manifest(&manifest, helm_key).await?;
+        core.update_manifest(&manifest, helm_key, receipt).await?;
         Ok(id)
     }
 

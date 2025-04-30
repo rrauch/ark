@@ -4,6 +4,10 @@ mod manifest;
 mod util;
 mod vault;
 
+pub use crate::crypto::{
+    ArkAddress, ArkSeed, DataKey, DataKeyRing, HelmKey, PublicHelmKey, PublicWorkerKey, SealKey,
+    WorkerKey,
+};
 use crate::crypto::{
     DataKeySeed, EncryptedData, EncryptedScratchpadContent, HelmKeySeed, PlaintextScratchpad,
     ScratchpadContent, Terminable, TypedChunk, TypedChunkAddress, TypedOwnedPointer,
@@ -13,20 +17,77 @@ use crate::crypto::{
 use crate::manifest::Manifest;
 use anyhow::{anyhow, bail};
 use std::fmt::Display;
-
-pub use crate::crypto::{
-    ArkAddress, ArkSeed, DataKey, DataKeyRing, HelmKey, PublicHelmKey, PublicWorkerKey, SealKey,
-    WorkerKey,
-};
+use std::ops::AddAssign;
 
 pub use crate::ark::Ark;
 pub use crate::ark::{ArkCreationDetails, ArkCreationSettings};
 pub use crate::vault::{Vault, VaultCreationSettings, VaultId};
+use autonomi::AttoTokens;
 use autonomi::client::payment::PaymentOption;
 use autonomi::pointer::PointerTarget;
 use autonomi::register::RegisterValue;
 pub use autonomi::{Client as AutonomiClient, Wallet as AutonomiWallet};
 use bytes::Bytes;
+pub use chrono::{DateTime, Utc};
+
+pub struct LineItem {
+    cost: AttoTokens,
+    timestamp: DateTime<Utc>,
+}
+pub struct Receipt {
+    items: Vec<LineItem>,
+}
+
+impl AddAssign for Receipt {
+    fn add_assign(&mut self, mut rhs: Self) {
+        self.items.append(&mut rhs.items);
+    }
+}
+
+impl Receipt {
+    fn new() -> Self {
+        Self {
+            items: Vec::default(),
+        }
+    }
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &LineItem> {
+        self.items.iter()
+    }
+
+    pub fn total_cost(&self) -> AttoTokens {
+        let mut attos = AttoTokens::zero();
+        self.items
+            .iter()
+            .for_each(|i| attos = attos.checked_add(i.cost).expect("attos not to overflow"));
+        attos
+    }
+
+    pub(crate) fn add(&mut self, cost: AttoTokens) {
+        self.items.push(LineItem {
+            cost,
+            timestamp: Utc::now(),
+        })
+    }
+}
+
+pub type CostlyResult<T, E> = core::result::Result<(T, Receipt), (E, Receipt)>;
+pub type Result<T> = CostlyResult<T, anyhow::Error>;
+
+async fn with_receipt<T>(f: impl AsyncFnOnce(&mut Receipt) -> anyhow::Result<T>) -> Result<T> {
+    let mut receipt = Receipt::new();
+    match f(&mut receipt).await {
+        Ok(ok) => Ok((ok, receipt)),
+        Err(err) => Err((err.into(), receipt)),
+    }
+}
 
 pub struct Core {
     client: AutonomiClient,
@@ -47,34 +108,42 @@ impl Core {
         setting: ArkCreationSettings,
         client: &AutonomiClient,
         wallet: &AutonomiWallet,
-    ) -> anyhow::Result<ArkCreationDetails> {
-        Ark::create(setting, client, wallet).await
+    ) -> Result<ArkCreationDetails> {
+        with_receipt(async move |receipt| Ark::create(setting, client, wallet, receipt).await).await
     }
 
     pub async fn create_vault(
         &self,
         settings: VaultCreationSettings,
         helm_key: &HelmKey,
-    ) -> anyhow::Result<VaultId> {
-        Vault::create(
-            settings,
-            &self.ark_address,
-            helm_key,
-            &self.client,
-            &self.wallet,
-        )
+    ) -> Result<VaultId> {
+        with_receipt(async move |receipt| {
+            Vault::create(
+                settings,
+                &self.ark_address,
+                helm_key,
+                &self.client,
+                &self.wallet,
+                receipt,
+            )
+            .await
+        })
         .await
     }
 
     /// Does a full refresh of the data keyring.
-    pub async fn update_data_keyring(&self, ark_seed: &ArkSeed) -> anyhow::Result<u64> {
-        self.verify_ark_seed(ark_seed)?;
-        self.update_scratchpad(
-            self.seal_key()
-                .await?
-                .encrypt_data_keyring(&self.derive_data_keyring(&ark_seed).await?),
-            &ark_seed.data_keyring(),
-        )
+    pub async fn update_data_keyring(&self, ark_seed: &ArkSeed) -> Result<u64> {
+        with_receipt(async move |receipt| {
+            self.verify_ark_seed(ark_seed)?;
+            self.update_scratchpad(
+                self.seal_key()
+                    .await?
+                    .encrypt_data_keyring(&self.derive_data_keyring(&ark_seed).await?),
+                &ark_seed.data_keyring(),
+                receipt,
+            )
+            .await
+        })
         .await
     }
 
@@ -98,8 +167,10 @@ impl Core {
         &self,
         encrypted_content: EncryptedScratchpadContent<R, V>,
         owner: &TypedOwnedScratchpad<O, EncryptedData<R, V>>,
+        receipt: &mut Receipt,
     ) -> anyhow::Result<()> {
-        self.create_scratchpad(encrypted_content, owner).await
+        self.create_scratchpad(encrypted_content, owner, receipt)
+            .await
     }
 
     /// Creates a new **PLAINTEXT** scratchpad owned by the given owner.
@@ -107,6 +178,7 @@ impl Core {
         &self,
         content: V,
         owner: &TypedOwnedScratchpad<T, V>,
+        receipt: &mut Receipt,
     ) -> anyhow::Result<()> {
         let pad = PlaintextScratchpad::new_from_value(content, owner.owner().public_key().clone())
             .try_into_scratchpad(owner)?;
@@ -117,7 +189,9 @@ impl Core {
         {
             bail!("scratchpad already exists");
         }
-        let address = self.client.scratchpad_put(pad, self.payment()).await?.1;
+        let (attos, address) = self.client.scratchpad_put(pad, self.payment()).await?;
+        receipt.add(attos);
+
         if &address != owner.address().as_ref() {
             bail!("incorrect scratchpad address returned");
         }
@@ -142,6 +216,7 @@ impl Core {
         &self,
         content: V,
         owner: &TypedOwnedScratchpad<T, V>,
+        receipt: &mut Receipt,
     ) -> anyhow::Result<u64> {
         let mut pad = PlaintextScratchpad::try_from_scratchpad(
             self.client
@@ -149,9 +224,11 @@ impl Core {
                 .await?,
         )?;
         let counter = pad.update(content)?;
-        self.client
+        let (attos, _) = self
+            .client
             .scratchpad_put(pad.try_into_scratchpad(owner)?, self.payment())
             .await?;
+        receipt.add(attos);
         Ok(counter)
     }
 
@@ -161,15 +238,18 @@ impl Core {
     >(
         &self,
         owner: &TypedOwnedScratchpad<T, V>,
+        receipt: &mut Receipt,
     ) -> anyhow::Result<()> {
         let pad = PlaintextScratchpad::try_from_scratchpad(
             self.client
                 .scratchpad_get_from_public_key(owner.address().as_ref().owner())
                 .await?,
         )?;
-        self.client
+        let (attos, _) = self
+            .client
             .scratchpad_put(pad.terminate(owner)?, self.payment())
             .await?;
+        receipt.add(attos);
         Ok(())
     }
 
@@ -259,50 +339,67 @@ impl Core {
         ))
     }
 
-    pub async fn rotate_data_key(&self, ark_seed: &ArkSeed) -> anyhow::Result<DataKey> {
-        self.verify_ark_seed(ark_seed)?;
-        let data_register = ark_seed.data_register();
-        let new_data_key_seed = DataKeySeed::random();
-        let new_data_key = ark_seed.data_key(&new_data_key_seed);
-        self.update_register(&data_register, new_data_key_seed)
+    pub async fn rotate_data_key(&self, ark_seed: &ArkSeed) -> Result<DataKey> {
+        with_receipt(async move |receipt| {
+            self.verify_ark_seed(ark_seed)?;
+            let data_register = ark_seed.data_register();
+            let new_data_key_seed = DataKeySeed::random();
+            let new_data_key = ark_seed.data_key(&new_data_key_seed);
+            self.update_register(&data_register, new_data_key_seed, receipt)
+                .await?;
+
+            self.update_scratchpad(
+                new_data_key
+                    .public_key()
+                    .encrypt_data_keyring(&self.derive_data_keyring(&ark_seed).await?),
+                &ark_seed.data_keyring(),
+                receipt,
+            )
             .await?;
 
-        self.update_scratchpad(
-            new_data_key
-                .public_key()
-                .encrypt_data_keyring(&self.derive_data_keyring(&ark_seed).await?),
-            &ark_seed.data_keyring(),
-        )
-        .await?;
-
-        Ok(new_data_key)
+            Ok(new_data_key)
+        })
+        .await
     }
 
-    pub async fn rotate_helm_key(
-        &self,
-        ark_seed: &ArkSeed,
-    ) -> anyhow::Result<(HelmKey, WorkerKey)> {
-        self.verify_ark_seed(ark_seed)?;
-        let previous_helm_key = self.helm_key(ark_seed).await?;
-        let previous_worker_key = self.worker_key(&previous_helm_key).await?;
-        let new_helm_key_seed = HelmKeySeed::random();
-        let new_helm_key = ark_seed.helm_key(&new_helm_key_seed);
+    pub async fn rotate_helm_key(&self, ark_seed: &ArkSeed) -> Result<(HelmKey, WorkerKey)> {
+        with_receipt(async move |receipt| {
+            self.verify_ark_seed(ark_seed)?;
+            let previous_helm_key = self.helm_key(ark_seed).await?;
+            let previous_worker_key = self.worker_key(&previous_helm_key).await?;
+            let new_helm_key_seed = HelmKeySeed::random();
+            let new_helm_key = ark_seed.helm_key(&new_helm_key_seed);
 
-        let new_worker_key = self
-            ._rotate_worker_key(&previous_helm_key, &previous_worker_key, &new_helm_key)
-            .await?;
+            let new_worker_key = self
+                ._rotate_worker_key(
+                    &previous_helm_key,
+                    &previous_worker_key,
+                    &new_helm_key,
+                    receipt,
+                )
+                .await?;
 
-        self.update_register(&ark_seed.helm_register(), new_helm_key_seed)
-            .await?;
+            self.update_register(&ark_seed.helm_register(), new_helm_key_seed, receipt)
+                .await?;
 
-        self.terminate_manifest(&previous_helm_key).await?;
+            self.terminate_manifest(&previous_helm_key, receipt).await?;
 
-        Ok((new_helm_key, new_worker_key))
+            Ok((new_helm_key, new_worker_key))
+        })
+        .await
     }
 
-    pub async fn rotate_worker_key(&self, helm_key: &HelmKey) -> anyhow::Result<WorkerKey> {
-        self._rotate_worker_key(helm_key, &self.worker_key(&helm_key).await?, helm_key)
+    pub async fn rotate_worker_key(&self, helm_key: &HelmKey) -> Result<WorkerKey> {
+        with_receipt(async move |receipt| {
+            self._rotate_worker_key(
+                helm_key,
+                &self.worker_key(&helm_key).await?,
+                helm_key,
+                receipt,
+            )
             .await
+        })
+        .await
     }
 
     async fn _rotate_worker_key(
@@ -310,6 +407,7 @@ impl Core {
         previous_helm_key: &HelmKey,
         previous_worker_key: &WorkerKey,
         new_helm_key: &HelmKey,
+        receipt: &mut Receipt,
     ) -> anyhow::Result<WorkerKey> {
         let manifest = self
             .get_specific_manifest(&previous_worker_key, previous_helm_key.public_key())
@@ -322,20 +420,30 @@ impl Core {
             self.update_scratchpad(
                 new_worker_key.public_key().encrypt_manifest(&manifest),
                 &previous_helm_key.manifest(),
+                receipt,
             )
             .await?;
-            self.update_register(&previous_helm_key.worker_register(), new_worker_key_seed)
-                .await?;
+            self.update_register(
+                &previous_helm_key.worker_register(),
+                new_worker_key_seed,
+                receipt,
+            )
+            .await?;
         } else {
             // Part of a bigger rotation
             self.create_encrypted_scratchpad(
                 new_worker_key.public_key().encrypt_manifest(&manifest),
                 &new_helm_key.manifest(),
+                receipt,
             )
             .await?;
 
-            self.create_register(&new_helm_key.worker_register(), new_worker_key_seed)
-                .await?;
+            self.create_register(
+                &new_helm_key.worker_register(),
+                new_worker_key_seed,
+                receipt,
+            )
+            .await?;
         }
 
         Ok(new_worker_key)
@@ -360,6 +468,7 @@ impl Core {
         &self,
         manifest: &Manifest,
         helm_key: &HelmKey,
+        receipt: &mut Receipt,
     ) -> anyhow::Result<u64> {
         if &manifest.ark_address != &self.ark_address {
             bail!("manifest ark address does not match given ark address");
@@ -368,28 +477,37 @@ impl Core {
         self.update_scratchpad(
             self.public_worker_key().await?.encrypt_manifest(&manifest),
             &helm_key.manifest(),
+            receipt,
         )
         .await
     }
 
-    async fn terminate_manifest(&self, helm_key: &HelmKey) -> anyhow::Result<()> {
+    async fn terminate_manifest(
+        &self,
+        helm_key: &HelmKey,
+        receipt: &mut Receipt,
+    ) -> anyhow::Result<()> {
         if &self.public_helm_key().await? == helm_key.public_key() {
             bail!(
                 "helm_key is still active for ark [{}], cannot terminate manifest",
                 self.ark_address
             )
         };
-        self.danger_terminate_scratchpad(&helm_key.manifest())
+        self.danger_terminate_scratchpad(&helm_key.manifest(), receipt)
             .await?;
         Ok(())
     }
 
-    async fn put_chunk<T>(&self, chunk: &TypedChunk<T>) -> anyhow::Result<()> {
-        let address = self
+    async fn put_chunk<T>(
+        &self,
+        chunk: &TypedChunk<T>,
+        receipt: &mut Receipt,
+    ) -> anyhow::Result<()> {
+        let (attos, address) = self
             .client
             .chunk_put(chunk.as_ref(), self.payment())
-            .await?
-            .1;
+            .await?;
+        receipt.add(attos);
         if chunk.address().as_ref() != &address {
             bail!("incorrect chunk address returned");
         }
@@ -411,12 +529,13 @@ impl Core {
         &self,
         register: &TypedOwnedRegister<T, V>,
         value: V,
+        receipt: &mut Receipt,
     ) -> anyhow::Result<()> {
-        let address = self
+        let (attos, address) = self
             .client
             .register_create(register.owner().as_ref(), value.into(), self.payment())
-            .await?
-            .1;
+            .await?;
+        receipt.add(attos);
         if register.address().as_ref() != &address {
             bail!("incorrect register address returned");
         }
@@ -427,10 +546,13 @@ impl Core {
         &self,
         register: &TypedOwnedRegister<T, V>,
         value: V,
+        receipt: &mut Receipt,
     ) -> anyhow::Result<()> {
-        self.client
+        let attos = self
+            .client
             .register_update(register.owner().as_ref(), value.into(), self.payment())
             .await?;
+        receipt.add(attos);
         Ok(())
     }
 
@@ -469,12 +591,13 @@ impl Core {
         &self,
         pointer: &TypedOwnedPointer<T, V>,
         value: V,
+        receipt: &mut Receipt,
     ) -> anyhow::Result<()> {
-        let address = self
+        let (attos, address) = self
             .client
             .pointer_create(pointer.owner().as_ref(), value.into(), self.payment())
-            .await?
-            .1;
+            .await?;
+        receipt.add(attos);
         if pointer.address().as_ref() != &address {
             bail!("incorrect pointer address returned");
         }

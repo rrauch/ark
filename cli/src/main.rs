@@ -21,12 +21,13 @@ async fn main() -> anyhow::Result<()> {
         client.evm_network().clone(),
         std::env::var("SECRET_KEY")?.as_str(),
     )?;
-    let ark_details = Core::create_ark(
+    let (ark_details, mut receipt) = Core::create_ark(
         ArkCreationSettings::builder().name("Test Ark").build(),
         &client,
         &wallet,
     )
-    .await?;
+    .await
+    .map_err(|(e, _)| e)?;
 
     println!("-----------------------------------------");
     println!("New Ark Created!");
@@ -49,12 +50,14 @@ async fn main() -> anyhow::Result<()> {
     println!("-----------------------------------------");
 
     let core = Core::new(client, wallet, ark_details.address.clone());
-    let vault_id = core
+    let (vault_id, r) = core
         .create_vault(
             VaultCreationSettings::builder().name("Vault 1").build(),
             &ark_details.helm_key,
         )
-        .await?;
+        .await
+        .map_err(|(e, _)| e)?;
+    receipt += r;
 
     println!("added vault {}", vault_id);
     println!("-----------------------------------------");
@@ -62,11 +65,21 @@ async fn main() -> anyhow::Result<()> {
     println!();
 
     let ark_seed = ArkSeed::try_from_mnemonic(ark_details.mnemonic.clone())?;
-    let data_key = core.rotate_data_key(&ark_seed).await?;
+    let (data_key, r) = core.rotate_data_key(&ark_seed).await.map_err(|(e, _)| e)?;
+    receipt += r;
     println!("new data key: {}", data_key.danger_to_string());
-    let (helm_key, worker_key) = core.rotate_helm_key(&ark_seed).await?;
+    let ((helm_key, worker_key), receipt) =
+        core.rotate_helm_key(&ark_seed).await.map_err(|(e, _)| e)?;
     println!("new helm key: {}", helm_key.danger_to_string());
     println!("new worker key: {}", worker_key.danger_to_string());
+    println!("-----------------------------------------");
+    println!();
+    println!(
+        "total cost: {} attos over {} items",
+        receipt.total_cost(),
+        receipt.len()
+    );
+    println!();
     println!("-----------------------------------------");
     println!();
     Ok(())

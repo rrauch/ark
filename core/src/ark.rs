@@ -4,7 +4,7 @@ use crate::crypto::{
 use crate::manifest::Manifest;
 use crate::util::{Comparison, diff_maps};
 use crate::vault::{Vault, VaultConfig, VaultId};
-use crate::{ArkSeed, AutonomiClient, AutonomiWallet, Core};
+use crate::{ArkSeed, AutonomiClient, AutonomiWallet, Core, Receipt};
 use bon::Builder;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -46,19 +46,20 @@ impl Ark {
         settings: ArkCreationSettings,
         client: &AutonomiClient,
         wallet: &AutonomiWallet,
+        receipt: &mut Receipt,
     ) -> anyhow::Result<ArkCreationDetails> {
         let (ark_seed, mnemonic) = ArkSeed::random();
         let core = Core::new(client.clone(), wallet.clone(), ark_seed.address().clone());
 
         let helm_register = ark_seed.helm_register();
         let helm_key_seed = HelmKeySeed::random();
-        core.create_register(&helm_register, helm_key_seed.clone())
+        core.create_register(&helm_register, helm_key_seed.clone(), receipt)
             .await?;
         let helm_key = ark_seed.helm_key(&helm_key_seed);
 
         let data_register = ark_seed.data_register();
         let data_key_seed = DataKeySeed::random();
-        core.create_register(&data_register, data_key_seed.clone())
+        core.create_register(&data_register, data_key_seed.clone(), receipt)
             .await?;
         let data_key = ark_seed.data_key(&data_key_seed);
 
@@ -67,12 +68,13 @@ impl Ark {
                 .public_key()
                 .encrypt_data_keyring(&core.derive_data_keyring(&ark_seed).await?),
             &ark_seed.data_keyring(),
+            receipt,
         )
         .await?;
 
         let worker_register = helm_key.worker_register();
         let worker_key_seed = WorkerKeySeed::random();
-        core.create_register(&worker_register, worker_key_seed.clone())
+        core.create_register(&worker_register, worker_key_seed.clone(), receipt)
             .await?;
         let worker_key = helm_key.worker_key(&worker_key_seed);
 
@@ -81,6 +83,7 @@ impl Ark {
         core.create_encrypted_scratchpad(
             worker_key.public_key().encrypt_manifest(&manifest),
             &helm_key.manifest(),
+            receipt,
         )
         .await?;
 
