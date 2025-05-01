@@ -223,11 +223,14 @@ impl Core {
         {
             bail!("scratchpad already exists");
         }
-        let (attos, address) = self.client.scratchpad_put(pad, self.payment()).await?;
-        receipt.add(attos);
+        let address = pad.address().clone();
+        let res = self.client.scratchpad_put(pad, self.payment()).await;
         self.scratchpad_cache.invalidate(&address).await;
+        let (attos, address) = res?;
+        receipt.add(attos);
 
         if &address != owner.address().as_ref() {
+            self.scratchpad_cache.invalidate(&address).await;
             bail!("incorrect scratchpad address returned");
         }
         Ok(())
@@ -264,12 +267,14 @@ impl Core {
             self._scratchpad_get(owner.address().as_ref()).await?,
         )?;
         let counter = pad.update(content)?;
-        let (attos, address) = self
+        let address = pad.address().as_ref().clone();
+        let res = self
             .client
             .scratchpad_put(pad.try_into_scratchpad(owner)?, self.payment())
-            .await?;
-        receipt.add(attos);
+            .await;
         self.scratchpad_cache.invalidate(&address).await;
+        let (attos, _) = res?;
+        receipt.add(attos);
         Ok(counter)
     }
 
@@ -284,12 +289,14 @@ impl Core {
         let pad = PlaintextScratchpad::try_from_scratchpad(
             self._scratchpad_get(owner.address().as_ref()).await?,
         )?;
-        let (attos, address) = self
+        let address = pad.address().as_ref().clone();
+        let res = self
             .client
             .scratchpad_put(pad.terminate(owner)?, self.payment())
-            .await?;
-        receipt.add(attos);
+            .await;
         self.scratchpad_cache.invalidate(&address).await;
+        let (attos, _) = res?;
+        receipt.add(attos);
         Ok(())
     }
 
@@ -575,9 +582,9 @@ impl Core {
             .client
             .register_create(register.owner().as_ref(), value.into(), self.payment())
             .await?;
-        receipt.add(attos);
         self.register_cache.invalidate(&address).await;
         self.register_history_cache.invalidate(&address).await;
+        receipt.add(attos);
         if register.address().as_ref() != &address {
             bail!("incorrect register address returned");
         }
@@ -590,14 +597,14 @@ impl Core {
         value: V,
         receipt: &mut Receipt,
     ) -> anyhow::Result<()> {
-        let attos = self
+        let address = register.address().as_ref();
+        let res = self
             .client
             .register_update(register.owner().as_ref(), value.into(), self.payment())
-            .await?;
-        receipt.add(attos);
-        let address = register.address().as_ref();
+            .await;
         self.register_cache.invalidate(address).await;
         self.register_history_cache.invalidate(address).await;
+        receipt.add(res?);
         Ok(())
     }
 
@@ -656,9 +663,12 @@ impl Core {
             .client
             .pointer_create(pointer.owner().as_ref(), value.into(), self.payment())
             .await?;
-        receipt.add(attos);
         self.pointer_cache.invalidate(&address).await;
+        receipt.add(attos);
         if pointer.address().as_ref() != &address {
+            self.pointer_cache
+                .invalidate(pointer.address().as_ref())
+                .await;
             bail!("incorrect pointer address returned");
         }
         Ok(())
@@ -669,13 +679,14 @@ impl Core {
         pointer: &TypedOwnedPointer<T, V>,
         value: V,
     ) -> anyhow::Result<()> {
-        self.client
+        let res = self
+            .client
             .pointer_update(pointer.owner().as_ref(), value.into())
-            .await?;
+            .await;
         self.pointer_cache
             .invalidate(pointer.address().as_ref())
             .await;
-        Ok(())
+        res.map_err(|e| e.into())
     }
 
     async fn read_chunk_pointer<T, V: TryFrom<Bytes>>(
