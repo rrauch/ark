@@ -33,9 +33,9 @@ async fn main() -> anyhow::Result<()> {
     println!("New Ark Created!");
     println!();
     println!("Address: {}", ark_details.address);
-    println!("Created at: {}", ark_details.ark.created);
-    println!("Name: {}", ark_details.ark.name);
-    if let Some(description) = ark_details.ark.description.as_ref() {
+    println!("Created at: {}", ark_details.manifest.created);
+    println!("Name: {}", ark_details.manifest.name);
+    if let Some(description) = ark_details.manifest.description.as_ref() {
         println!("-----------");
         println!("{}", description);
         println!("-----------")

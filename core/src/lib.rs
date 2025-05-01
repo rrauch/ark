@@ -1,10 +1,8 @@
 mod ark;
 mod crypto;
 mod manifest;
-mod util;
 mod vault;
 
-pub use crate::ark::Ark;
 pub use crate::ark::{ArkCreationDetails, ArkCreationSettings};
 pub use crate::crypto::{
     ArkAddress, ArkSeed, DataKey, DataKeyRing, HelmKey, PublicHelmKey, PublicWorkerKey, SealKey,
@@ -16,8 +14,8 @@ use crate::crypto::{
     TypedOwnedRegister, TypedOwnedScratchpad, TypedPointerAddress, TypedRegisterAddress,
     TypedScratchpadAddress, WorkerKeySeed,
 };
-use crate::manifest::Manifest;
-pub use crate::vault::{Vault, VaultCreationSettings, VaultId};
+pub use crate::manifest::Manifest;
+pub use crate::vault::{VaultConfig, VaultCreationSettings, VaultId};
 use anyhow::{anyhow, bail};
 use autonomi::client::payment::PaymentOption;
 use autonomi::pointer::PointerTarget;
@@ -28,9 +26,11 @@ use bon::bon;
 use bytes::Bytes;
 pub use chrono::{DateTime, Utc};
 use moka::future::Cache;
-use std::fmt::Display;
+use std::fmt::{Debug, Display, Formatter};
+use std::marker::PhantomData;
 use std::ops::AddAssign;
 use std::time::Duration;
+use uuid::Uuid;
 
 pub struct LineItem {
     cost: AttoTokens,
@@ -152,7 +152,7 @@ impl Core {
         client: &AutonomiClient,
         wallet: &AutonomiWallet,
     ) -> Result<ArkCreationDetails> {
-        with_receipt(async move |receipt| Ark::create(setting, client, wallet, receipt).await).await
+        with_receipt(async move |receipt| ark::create(setting, client, wallet, receipt).await).await
     }
 
     pub async fn create_vault(
@@ -160,7 +160,7 @@ impl Core {
         settings: VaultCreationSettings,
         helm_key: &HelmKey,
     ) -> Result<VaultId> {
-        with_receipt(async move |receipt| Vault::create(settings, helm_key, &self, receipt).await)
+        with_receipt(async move |receipt| vault::create(settings, helm_key, &self, receipt).await)
             .await
     }
 
@@ -713,6 +713,37 @@ impl Core {
 
     fn payment(&self) -> PaymentOption {
         PaymentOption::Wallet(self.wallet.clone())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct TypedUuid<T> {
+    inner: Uuid,
+    _type: PhantomData<T>,
+}
+
+impl<T> Display for TypedUuid<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self.inner, f)
+    }
+}
+
+impl<T> AsRef<Uuid> for TypedUuid<T> {
+    fn as_ref(&self) -> &Uuid {
+        &self.inner
+    }
+}
+
+impl<T> TypedUuid<T> {
+    pub(crate) fn new(inner: Uuid) -> Self {
+        Self {
+            inner,
+            _type: Default::default(),
+        }
+    }
+
+    pub fn into_inner(self) -> Uuid {
+        self.inner
     }
 }
 

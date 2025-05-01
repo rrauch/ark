@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = { workspace = true }
 autonomi = { workspace = true }
+chrono = { workspace = true }
 core = { path = "../core" }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }

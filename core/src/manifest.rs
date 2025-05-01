@@ -1,3 +1,4 @@
+use crate::VaultId;
 use crate::ark::ArkCreationSettings;
 use crate::crypto::{ArkAddress, Terminable};
 use crate::protos::{deserialize_with_header, serialize_with_header};
@@ -25,7 +26,7 @@ impl Terminable for Manifest {}
 impl From<VaultCreationSettings> for VaultConfig {
     fn from(value: VaultCreationSettings) -> Self {
         Self {
-            id: Uuid::now_v7(),
+            id: VaultId::new(Uuid::now_v7()),
             created: Utc::now(),
             last_modified: Utc::now(),
             name: value.name,
@@ -81,6 +82,7 @@ impl TryFrom<Bytes> for Manifest {
 }
 
 mod protos {
+    use crate::VaultId;
     use anyhow::anyhow;
 
     include!(concat!(env!("OUT_DIR"), "/protos/manifest.rs"));
@@ -129,7 +131,7 @@ mod protos {
     impl From<super::VaultConfig> for Vault {
         fn from(value: super::VaultConfig) -> Self {
             Self {
-                id: Some(value.id.into()),
+                id: Some(value.id.into_inner().into()),
                 created: Some(value.created.into()),
                 last_modified: Some(value.last_modified.into()),
                 name: value.name,
@@ -144,7 +146,7 @@ mod protos {
 
         fn try_from(value: Vault) -> Result<Self, Self::Error> {
             Ok(Self {
-                id: value.id.ok_or(anyhow!("id is missing"))?.try_into()?,
+                id: VaultId::new(value.id.ok_or(anyhow!("id is missing"))?.try_into()?),
                 created: value
                     .created
                     .ok_or(anyhow!("created is missing"))?
