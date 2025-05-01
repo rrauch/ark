@@ -1771,6 +1771,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "autonomi",
+ "clap",
  "core",
  "tokio",
  "tracing",
@@ -1871,6 +1872,7 @@ dependencies = [
 name = "core"
 version = "0.0.1"
 dependencies = [
+ "ant-bootstrap",
  "anyhow",
  "autonomi",
  "bech32",
@@ -1889,6 +1891,7 @@ dependencies = [
  "sn_curv",
  "tokio",
  "tracing",
+ "url",
  "uuid",
  "zeroize",
 ]

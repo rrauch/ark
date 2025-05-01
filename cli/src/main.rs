@@ -1,5 +1,6 @@
-use autonomi::{Client, Wallet};
-use core::{ArkCreationSettings, ArkSeed, Core, VaultCreationSettings};
+use autonomi::Wallet;
+use core::{ArkCreationSettings, ArkSeed, AutonomiClientConfig, Core, VaultCreationSettings};
+use std::str::FromStr;
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
@@ -16,7 +17,9 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::Layer::default())
         .init();
 
-    let client = Client::init_local().await?;
+    let client_config = AutonomiClientConfig::from_str(std::env::var("AUTONOMI_CONFIG")?.as_str())?;
+
+    let client = client_config.try_new_client().await?;
     let wallet = Wallet::new_from_private_key(
         client.evm_network().clone(),
         std::env::var("SECRET_KEY")?.as_str(),

@@ -1,4 +1,5 @@
 mod ark;
+mod autonomi_config;
 mod crypto;
 mod manifest;
 mod vault;
@@ -22,6 +23,7 @@ use autonomi::pointer::PointerTarget;
 use autonomi::register::{RegisterAddress, RegisterValue};
 use autonomi::{AttoTokens, Pointer, PointerAddress, Scratchpad, ScratchpadAddress};
 pub use autonomi::{Client as AutonomiClient, Wallet as AutonomiWallet};
+pub use autonomi_config::ClientConfig as AutonomiClientConfig;
 use bon::bon;
 use bytes::Bytes;
 pub use chrono::{DateTime, Utc};
