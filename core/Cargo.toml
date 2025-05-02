@@ -23,7 +23,7 @@ tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 url = { workspace = true }
 uuid = { version = "1.16", features = ["v7"] }
-zeroize = "1.8"
+zeroize = { workspace = true }
 
 [build-dependencies]
 anyhow = "1"

@@ -1,10 +1,47 @@
 use autonomi::Wallet;
+use clap::Parser;
 use core::{ArkCreationSettings, ArkSeed, AutonomiClientConfig, Core, VaultCreationSettings};
-use std::str::FromStr;
+use std::fmt::{Debug, Formatter};
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+use zeroize::{Zeroize, ZeroizeOnDrop};
+
+#[derive(Debug, Parser)]
+#[command(version)]
+/// Ark CLI tool.
+///
+/// WIP
+struct Arguments {
+    /// Autonomi Network Configuration
+    #[arg(long, short = 'c', env, default_value = "autonomi:config:mainnet")]
+    autonomi_config: AutonomiClientConfig,
+    /// Wallet Secret Key
+    #[arg(env)]
+    secret_key: ConfidentialString,
+}
+
+#[derive(Zeroize, ZeroizeOnDrop, Clone)]
+struct ConfidentialString(String);
+
+impl From<String> for ConfidentialString {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl Debug for ConfidentialString {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<redacted>")
+    }
+}
+
+impl AsRef<str> for ConfidentialString {
+    fn as_ref(&self) -> &str {
+        self.0.as_str()
+    }
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -17,13 +54,11 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::Layer::default())
         .init();
 
-    let client_config = AutonomiClientConfig::from_str(std::env::var("AUTONOMI_CONFIG")?.as_str())?;
+    let arguments = Arguments::parse();
 
-    let client = client_config.try_new_client().await?;
-    let wallet = Wallet::new_from_private_key(
-        client.evm_network().clone(),
-        std::env::var("SECRET_KEY")?.as_str(),
-    )?;
+    let client = (&arguments.autonomi_config).try_new_client().await?;
+    let wallet =
+        Wallet::new_from_private_key(client.evm_network().clone(), arguments.secret_key.as_ref())?;
     let (ark_details, mut receipt) = Core::create_ark(
         ArkCreationSettings::builder().name("Test Ark").build(),
         &client,
