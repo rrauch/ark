@@ -1,3 +1,5 @@
+![Ark: Your Data. Archived. Forever.](./cover.png)
+
 # Ark: Self-Sovereign Digital Archiving (Proof-of-Concept)
 
 ---
