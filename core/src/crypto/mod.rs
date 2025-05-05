@@ -316,7 +316,7 @@ pub struct EncryptedData<T, V> {
     _value_type: PhantomData<V>,
 }
 
-impl<T, V: Terminable> Terminable for EncryptedData<T, V> {}
+impl<T, V: Retirable> Retirable for EncryptedData<T, V> {}
 
 impl<T, V> EncryptedData<T, V> {
     fn from_ciphertext(inner: Ciphertext) -> Self {
@@ -350,7 +350,7 @@ impl<T, V> TryFrom<Bytes> for EncryptedData<T, V> {
     }
 }
 
-pub trait Terminable {}
+pub trait Retirable {}
 
 fn eip2333(seed: impl AsRef<[u8]>) -> anyhow::Result<[u8; 32]> {
     // Derive BLS12-381 master secret key from seed using EIP-2333 standard.

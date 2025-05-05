@@ -11,7 +11,7 @@ pub use crate::crypto::{
 };
 use crate::crypto::{
     DataKeySeed, EncryptedData, EncryptedScratchpadContent, HelmKeySeed, PlaintextScratchpad,
-    ScratchpadContent, Terminable, TypedChunk, TypedChunkAddress, TypedOwnedPointer,
+    Retirable, ScratchpadContent, TypedChunk, TypedChunkAddress, TypedOwnedPointer,
     TypedOwnedRegister, TypedOwnedScratchpad, TypedPointerAddress, TypedRegisterAddress,
     TypedScratchpadAddress, WorkerKeySeed,
 };
@@ -280,10 +280,7 @@ impl Core {
         Ok(counter)
     }
 
-    async fn danger_terminate_scratchpad<
-        T: Clone + PartialEq,
-        V: ScratchpadContent + Terminable,
-    >(
+    async fn danger_retire_scratchpad<T: Clone + PartialEq, V: ScratchpadContent + Retirable>(
         &self,
         owner: &TypedOwnedScratchpad<T, V>,
         receipt: &mut Receipt,
@@ -294,7 +291,7 @@ impl Core {
         let address = pad.address().as_ref().clone();
         let res = self
             .client
-            .scratchpad_put(pad.terminate(owner)?, self.payment())
+            .scratchpad_put(pad.retire(owner)?, self.payment())
             .await;
         self.scratchpad_cache.invalidate(&address).await;
         let (attos, _) = res?;
@@ -431,7 +428,7 @@ impl Core {
             self.update_register(&ark_seed.helm_register(), new_helm_key_seed, receipt)
                 .await?;
 
-            self.terminate_manifest(&previous_helm_key, receipt).await?;
+            self.retire_manifest(&previous_helm_key, receipt).await?;
 
             Ok((new_helm_key, new_worker_key))
         })
@@ -531,18 +528,18 @@ impl Core {
         .await
     }
 
-    async fn terminate_manifest(
+    async fn retire_manifest(
         &self,
         helm_key: &HelmKey,
         receipt: &mut Receipt,
     ) -> anyhow::Result<()> {
         if &self.public_helm_key().await? == helm_key.public_key() {
             bail!(
-                "helm_key is still active for ark [{}], cannot terminate manifest",
+                "helm_key is still active for ark [{}], cannot retire manifest",
                 self.ark_address
             )
         };
-        self.danger_terminate_scratchpad(&helm_key.manifest(), receipt)
+        self.danger_retire_scratchpad(&helm_key.manifest(), receipt)
             .await?;
         Ok(())
     }

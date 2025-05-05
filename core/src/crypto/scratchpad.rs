@@ -1,5 +1,5 @@
 use crate::crypto::keys::{TypedPublicKey, TypedSecretKey};
-use crate::crypto::{EncryptedData, Terminable};
+use crate::crypto::{EncryptedData, Retirable};
 use anyhow::{anyhow, bail};
 use autonomi::{Client, Scratchpad, ScratchpadAddress};
 use bytes::Bytes;
@@ -8,8 +8,8 @@ use std::fmt::Display;
 use std::marker::PhantomData;
 use std::ops::Deref;
 
-const TERMINATION_ENCODING: u64 = u64::MAX;
-const TERMINATION_COUNTER: u64 = u64::MAX;
+const EOL_ENCODING: u64 = u64::MAX;
+const EOL_COUNTER: u64 = u64::MAX;
 static TOMBSTONE_VALUE: Lazy<Bytes> = Lazy::new(|| Bytes::from_static("RIP".as_bytes()));
 
 pub trait Content: Into<Bytes> + TryFrom<Bytes> {
@@ -91,8 +91,8 @@ impl<T, V: Content> PlaintextScratchpad<T, V> {
 
 impl<T, V: Content> PlaintextScratchpad<T, V> {
     pub(crate) fn try_from_scratchpad(pad: Scratchpad) -> anyhow::Result<Self> {
-        if is_terminated(&pad) {
-            bail!("scratchpad is terminated");
+        if is_retired(&pad) {
+            bail!("scratchpad is retired");
         }
 
         if pad.data_encoding() != V::ENCODING {
@@ -176,32 +176,32 @@ impl<T, V> PlaintextScratchpad<T, V> {
     }
 }
 
-impl<T, V: Terminable> PlaintextScratchpad<T, V> {
-    pub fn terminate(mut self, owner: &TypedOwnedScratchpad<T, V>) -> anyhow::Result<Scratchpad> {
-        if self.is_terminated() {
-            bail!("scratchpad already terminated");
+impl<T, V: Retirable> PlaintextScratchpad<T, V> {
+    pub fn retire(mut self, owner: &TypedOwnedScratchpad<T, V>) -> anyhow::Result<Scratchpad> {
+        if self.is_retired() {
+            bail!("scratchpad already retired");
         }
 
-        if self.counter >= TERMINATION_COUNTER {
-            bail!("scratchpad counter already >= [{}]", TERMINATION_COUNTER);
+        if self.counter >= EOL_COUNTER {
+            bail!("scratchpad counter already >= [{}]", EOL_COUNTER);
         }
 
-        self.data_encoding = TERMINATION_ENCODING;
-        self.counter = TERMINATION_COUNTER;
+        self.data_encoding = EOL_ENCODING;
+        self.counter = EOL_COUNTER;
         self.content = TOMBSTONE_VALUE.clone();
 
         self.try_into_scratchpad(owner)
     }
 
-    pub fn is_terminated(&self) -> bool {
-        self.data_encoding == TERMINATION_ENCODING
-            && self.counter == TERMINATION_COUNTER
+    pub fn is_retired(&self) -> bool {
+        self.data_encoding == EOL_ENCODING
+            && self.counter == EOL_COUNTER
             && &self.content == TOMBSTONE_VALUE.deref()
     }
 }
 
-fn is_terminated(pad: &Scratchpad) -> bool {
-    pad.data_encoding() == TERMINATION_ENCODING
-        && pad.counter() == TERMINATION_COUNTER
+fn is_retired(pad: &Scratchpad) -> bool {
+    pad.data_encoding() == EOL_ENCODING
+        && pad.counter() == EOL_COUNTER
         && pad.encrypted_data() == TOMBSTONE_VALUE.deref()
 }

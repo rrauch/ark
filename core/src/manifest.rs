@@ -1,6 +1,6 @@
 use crate::VaultId;
 use crate::ark::ArkCreationSettings;
-use crate::crypto::{ArkAddress, Terminable};
+use crate::crypto::{ArkAddress, Retirable};
 use crate::protos::{deserialize_with_header, serialize_with_header};
 use crate::vault::{VaultConfig, VaultCreationSettings};
 use bytes::Bytes;
@@ -21,7 +21,7 @@ pub struct Manifest {
     pub vaults: Vec<VaultConfig>,
 }
 
-impl Terminable for Manifest {}
+impl Retirable for Manifest {}
 
 impl From<VaultCreationSettings> for VaultConfig {
     fn from(value: VaultCreationSettings) -> Self {
