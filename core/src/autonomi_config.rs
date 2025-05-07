@@ -189,6 +189,24 @@ impl ClientConfig {
 
         url
     }
+
+    pub fn friendly(&self) -> String {
+        match &self.network {
+            Network::MainNet => "MainNet".to_string(),
+            Network::AlphaNet => "AlphaNet".to_string(),
+            Network::TestNet => "TestNet".to_string(),
+            Network::Local(cfg) => {
+                format!(
+                    "Local ({}{})",
+                    cfg.rpc_url.host_str().unwrap_or("unknown"),
+                    cfg.rpc_url
+                        .port()
+                        .map(|p| format!(":{}", p))
+                        .unwrap_or("".to_string())
+                )
+            }
+        }
+    }
 }
 
 impl FromStr for ClientConfig {

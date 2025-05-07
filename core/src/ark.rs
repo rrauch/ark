@@ -2,6 +2,7 @@ use crate::crypto::{
     ArkAddress, DataKey, DataKeySeed, HelmKey, HelmKeySeed, WorkerKey, WorkerKeySeed,
 };
 use crate::manifest::Manifest;
+use crate::progress::Task;
 use crate::{ArkSeed, AutonomiClient, AutonomiWallet, Core, Receipt};
 use bon::Builder;
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -11,24 +12,44 @@ pub(crate) async fn create(
     client: &AutonomiClient,
     wallet: &AutonomiWallet,
     receipt: &mut Receipt,
+    mut task: Task,
 ) -> anyhow::Result<ArkCreationDetails> {
+    task.start();
+
+    let mut seed_task = task.child(2, "Ark Seed".to_string());
+    let mut helm_key_task = task.child(2, "Helm Key".to_string());
+    let mut data_key_task = task.child(3, "Data Key".to_string());
+    let mut worker_key_task = task.child(2, "Worker Key".to_string());
+    let mut manifest_task = task.child(1, "Manifest".to_string());
+
+    seed_task.start();
     let (ark_seed, mnemonic) = ArkSeed::random();
+    seed_task += 1;
     let core = Core::builder()
         .ark_address(ark_seed.address().clone())
         .client(client.clone())
         .wallet(wallet.clone())
         .build();
+    seed_task += 1;
+    seed_task.complete();
 
+    helm_key_task.start();
     let helm_register = ark_seed.helm_register();
     let helm_key_seed = HelmKeySeed::random();
+    helm_key_task += 1;
     core.create_register(&helm_register, helm_key_seed.clone(), receipt)
         .await?;
+    helm_key_task += 1;
     let helm_key = ark_seed.helm_key(&helm_key_seed);
+    helm_key_task.complete();
 
+    data_key_task.start();
     let data_register = ark_seed.data_register();
     let data_key_seed = DataKeySeed::random();
+    data_key_task += 1;
     core.create_register(&data_register, data_key_seed.clone(), receipt)
         .await?;
+    data_key_task += 1;
     let data_key = ark_seed.data_key(&data_key_seed);
 
     core.create_encrypted_scratchpad(
@@ -39,13 +60,20 @@ pub(crate) async fn create(
         receipt,
     )
     .await?;
+    data_key_task += 1;
+    data_key_task.complete();
 
+    worker_key_task.start();
     let worker_register = helm_key.worker_register();
     let worker_key_seed = WorkerKeySeed::random();
+    worker_key_task += 1;
     core.create_register(&worker_register, worker_key_seed.clone(), receipt)
         .await?;
+    worker_key_task += 2;
     let worker_key = helm_key.worker_key(&worker_key_seed);
+    worker_key_task.complete();
 
+    manifest_task.start();
     let ark_address = ark_seed.address();
     let manifest = Manifest::new(&ark_address, settings);
     core.create_encrypted_scratchpad(
@@ -54,6 +82,10 @@ pub(crate) async fn create(
         receipt,
     )
     .await?;
+    manifest_task += 1;
+    manifest_task.complete();
+
+    task.complete();
 
     Ok(ArkCreationDetails {
         address: ark_address.clone(),
@@ -70,6 +102,16 @@ pub struct ArkCreationSettings {
     #[builder(into)]
     pub(crate) name: String,
     pub(crate) description: Option<String>,
+}
+
+impl ArkCreationSettings {
+    pub fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_ref().map(|s| s.as_str())
+    }
 }
 
 #[derive(Zeroize, ZeroizeOnDrop)]

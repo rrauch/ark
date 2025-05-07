@@ -2,6 +2,7 @@ mod ark;
 mod autonomi_config;
 mod crypto;
 mod manifest;
+mod progress;
 mod vault;
 
 pub use crate::ark::{ArkCreationDetails, ArkCreationSettings};
@@ -16,6 +17,7 @@ use crate::crypto::{
     TypedScratchpadAddress, WorkerKeySeed,
 };
 pub use crate::manifest::Manifest;
+pub use crate::progress::{Progress, Report as ProgressReport, Status as ProgressStatus};
 pub use crate::vault::{VaultConfig, VaultCreationSettings, VaultId};
 use anyhow::{anyhow, bail};
 use autonomi::client::payment::PaymentOption;
@@ -149,12 +151,21 @@ impl Core {
         }
     }
 
-    pub async fn create_ark(
+    pub fn create_ark(
         setting: ArkCreationSettings,
         client: &AutonomiClient,
         wallet: &AutonomiWallet,
-    ) -> Result<ArkCreationDetails> {
-        with_receipt(async move |receipt| ark::create(setting, client, wallet, receipt).await).await
+    ) -> (
+        Progress,
+        impl Future<Output = Result<ArkCreationDetails>> + Send,
+    ) {
+        let (progress, task) = Progress::new(1, "Ark Creation".to_string());
+
+        let fut = with_receipt(async move |receipt| {
+            ark::create(setting, client, wallet, receipt, task).await
+        });
+
+        (progress, fut)
     }
 
     pub async fn create_vault(
