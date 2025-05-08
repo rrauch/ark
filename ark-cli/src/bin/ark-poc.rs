@@ -1,10 +1,10 @@
 use autonomi::{Client, Wallet};
 use clap::{Parser, Subcommand};
-use cli::{
+use ark_cli::{
     ConfidentialString, ProgressView, ask_confirmation, press_enter_key, read_helm_key, read_seed,
 };
 use colored::Colorize;
-use core::{ArkAddress, ArkCreationSettings, ArkSeed, AutonomiClientConfig, Core, HelmKey};
+use ark_core::{ArkAddress, ArkCreationSettings, ArkSeed, AutonomiClientConfig, Core, HelmKey};
 use futures_util::future::{BoxFuture, FutureExt};
 use std::fmt::{Debug, Display, Formatter};
 use std::time::Duration;
@@ -209,7 +209,7 @@ async fn rotate_key(
 
     let (mut progress, fut): (
         _,
-        BoxFuture<core::Result<Vec<(RotatableKey, String)>>>,
+        BoxFuture<ark_core::Result<Vec<(RotatableKey, String)>>>,
         //_,
     ) = match details.key {
         RotatableKey::Worker => {

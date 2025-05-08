@@ -913,6 +913,66 @@ dependencies = [
 ]
 
 [[package]]
+name = "ark-cli"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "ark-core",
+ "autonomi",
+ "clap",
+ "colored",
+ "futures-util",
+ "indicatif",
+ "once_cell",
+ "rpassword",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zeroize",
+]
+
+[[package]]
+name = "ark-core"
+version = "0.0.1"
+dependencies = [
+ "ant-bootstrap",
+ "anyhow",
+ "autonomi",
+ "bech32",
+ "bip39",
+ "blsttc",
+ "bon",
+ "bytes",
+ "chrono",
+ "moka",
+ "once_cell",
+ "prost 0.13.5",
+ "prost-build 0.13.5",
+ "protoc-bin-vendored",
+ "rand 0.9.1",
+ "sn_bls_ckd",
+ "sn_curv",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "ark-engine"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "ark-core",
+ "autonomi",
+ "chrono",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "ark-ff"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1766,25 +1826,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f46ad14479a25103f283c0f10005961cf086d8dc42205bb44c46ac563475dca6"
 
 [[package]]
-name = "cli"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "autonomi",
- "clap",
- "colored",
- "core",
- "futures-util",
- "indicatif",
- "once_cell",
- "rpassword",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "zeroize",
-]
-
-[[package]]
 name = "cloudabi"
 version = "0.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1894,34 +1935,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-xid",
-]
-
-[[package]]
-name = "core"
-version = "0.0.1"
-dependencies = [
- "ant-bootstrap",
- "anyhow",
- "autonomi",
- "bech32",
- "bip39",
- "blsttc",
- "bon",
- "bytes",
- "chrono",
- "moka",
- "once_cell",
- "prost 0.13.5",
- "prost-build 0.13.5",
- "protoc-bin-vendored",
- "rand 0.9.1",
- "sn_bls_ckd",
- "sn_curv",
- "tokio",
- "tracing",
- "url",
- "uuid",
- "zeroize",
 ]
 
 [[package]]
@@ -2480,19 +2493,6 @@ name = "encode_unicode"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
-
-[[package]]
-name = "engine"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "autonomi",
- "chrono",
- "core",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
 
 [[package]]
 name = "enum-as-inner"

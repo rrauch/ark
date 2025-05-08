@@ -1,6 +1,6 @@
 use anyhow::bail;
 use colored::Colorize;
-use core::{ArkSeed, HelmKey, ProgressReport, ProgressStatus};
+use ark_core::{ArkSeed, HelmKey, ProgressReport, ProgressStatus};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
@@ -104,7 +104,7 @@ impl ProgressView {
         let needs_recreation = if let Some((pb, _)) = self.bars.get(&report_id) {
             pb.is_finished()
                 && (report.status() == ProgressStatus::ACTIVE
-                    || report.status() == ProgressStatus::WAITING)
+                || report.status() == ProgressStatus::WAITING)
         } else {
             false
         };
@@ -186,7 +186,7 @@ impl ProgressView {
                 if let Some(ProgressStatus::FAILURE) = status {
                     pb.abandon_with_message(current_msg);
                 } else {
-                    pb.finish_with_message(format!("{} ✓", current_msg,));
+                    pb.finish_with_message(format!("{} ✓", current_msg, ));
                 }
             } else {
                 // If already finished, ensure it's cleared from display.

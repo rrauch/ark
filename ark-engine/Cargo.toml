@@ -1,5 +1,5 @@
 [package]
-name = "engine"
+name = "ark-engine"
 version = "0.0.1"
 edition = "2024"
 
@@ -7,7 +7,7 @@ edition = "2024"
 anyhow = { workspace = true }
 autonomi = { workspace = true }
 chrono = { workspace = true }
-core = { path = "../core" }
+ark-core = { path = "../ark-core" }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
