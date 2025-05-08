@@ -17,11 +17,30 @@ architecture.**
 
 ## 🚧 Current Status: Prototype Only
 
+### It's Alive!
+
+v0.0.1 is out:
+
+> The very first public code for Ark is out - **v0.0.1**!
+>
+> This *Proof-of-Concept* comes with a CLI tool that lets you create an Ark from scratch and experiment with key rotation. Not much more in there yet from a user's point of view, but it demonstrates the core concept with its key structure and management.
+> 
+> Seriously, though: **experimental only!**
+
 **Warning: This is a Proof-of-Concept and is NOT ready for storing any data.**
 This code is unstable and represents an early exploration of the concepts.
 
 The goal of this prototype is to validate the core cryptographic design, data handling flows, and interaction patterns
 with the Autonomi Network.
+
+---
+
+## Screenshots
+
+![Image](assets/poc/v0.0.1/screenshots/create2.png "creation of a new Ark")
+![Image](assets/poc/v0.0.1/screenshots/rotate3.png "key rotation")
+
+[more Screenshots here](assets/poc/v0.0.1/screenshots/)
 
 ---
 
@@ -93,9 +112,9 @@ capabilities:
 
 This repository contains a Proof-of-Concept implementation including:
 
-* `core`: Shared library with core logic.
-* `cli`: Command-line interface tool.
-* `engine`: The core daemon process.
+* `ark-core`: Shared library with core logic.
+* `ark-cli`: Command-line interface tool.
+* `ark-engine`: The core daemon process.
 * `bridge`: An example Bridge for local filesystems.
 
 ---
