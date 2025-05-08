@@ -17,6 +17,7 @@ use crate::crypto::{
     TypedScratchpadAddress, WorkerKeySeed,
 };
 pub use crate::manifest::Manifest;
+use crate::progress::Task;
 pub use crate::progress::{Progress, Report as ProgressReport, Status as ProgressStatus};
 pub use crate::vault::{VaultConfig, VaultCreationSettings, VaultId};
 use anyhow::{anyhow, bail};
@@ -396,67 +397,204 @@ impl Core {
         ))
     }
 
-    pub async fn rotate_data_key(&self, ark_seed: &ArkSeed) -> Result<DataKey> {
-        with_receipt(async move |receipt| {
-            self.verify_ark_seed(ark_seed)?;
-            let data_register = ark_seed.data_register();
-            let new_data_key_seed = DataKeySeed::random();
-            let new_data_key = ark_seed.data_key(&new_data_key_seed);
-            self.update_register(&data_register, new_data_key_seed, receipt)
-                .await?;
+    pub fn rotate_data_key<'a>(
+        &'a self,
+        ark_seed: &'a ArkSeed,
+    ) -> (Progress, impl Future<Output = Result<DataKey>> + Send + 'a) {
+        let (progress, task) = Progress::new(1, "Data Key Rotation".to_string());
+        (
+            progress,
+            with_receipt(async move |receipt| self._rotate_data_key(ark_seed, receipt, task).await),
+        )
+    }
 
-            self.update_scratchpad(
-                new_data_key
-                    .public_key()
-                    .encrypt_data_keyring(&self.derive_data_keyring(&ark_seed).await?),
-                &ark_seed.data_keyring(),
+    async fn _rotate_data_key(
+        &self,
+        ark_seed: &ArkSeed,
+        receipt: &mut Receipt,
+        mut task: Task,
+    ) -> anyhow::Result<DataKey> {
+        task.start();
+        let mut verify_seed = task.child(1, "Verify Ark Seed".to_string());
+        let mut read_current = task.child(1, "Retrieve current Data Key details".to_string());
+        let mut update_key = task.child(2, "Update Data Key".to_string());
+        let mut update_keyring = task.child(1, "Update Data Keyring".to_string());
+
+        verify_seed.start();
+        self.verify_ark_seed(ark_seed)?;
+        verify_seed.complete();
+
+        read_current.start();
+        let data_register = ark_seed.data_register();
+        read_current.complete();
+
+        update_key.start();
+        let new_data_key_seed = DataKeySeed::random();
+        update_key += 1;
+        let new_data_key = ark_seed.data_key(&new_data_key_seed);
+        self.update_register(&data_register, new_data_key_seed, receipt)
+            .await?;
+        update_key.complete();
+
+        update_keyring.start();
+        self.update_scratchpad(
+            new_data_key
+                .public_key()
+                .encrypt_data_keyring(&self.derive_data_keyring(&ark_seed).await?),
+            &ark_seed.data_keyring(),
+            receipt,
+        )
+        .await?;
+        update_keyring.complete();
+
+        task.complete();
+        Ok(new_data_key)
+    }
+
+    pub fn rotate_all_keys<'a>(
+        &'a self,
+        ark_seed: &'a ArkSeed,
+    ) -> (
+        Progress,
+        impl Future<Output = Result<(DataKey, HelmKey, WorkerKey)>> + Send + 'a,
+    ) {
+        let (progress, mut task) = Progress::new(1, "Full Ark Key Rotation".to_string());
+        (
+            progress,
+            with_receipt(async move |receipt| {
+                task.start();
+                let mut verify_seed = task.child(1, "Verify Ark Seed".to_string());
+                let mut hw_keys = task.child(1, "Helm and Worker Key".to_string());
+                let data_key_task = task.child(1, "Data Key".to_string());
+                verify_seed.start();
+                self.verify_ark_seed(ark_seed)?;
+                verify_seed.complete();
+
+                hw_keys.start();
+                let (helm_key, worker_key) = self
+                    ._rotate_helm_key(
+                        &ark_seed,
+                        receipt,
+                        task.child(1, "Rotate Helm Key".to_string()),
+                    )
+                    .await?;
+                hw_keys.complete();
+                let data_key = self
+                    ._rotate_data_key(ark_seed, receipt, data_key_task)
+                    .await?;
+                task.complete();
+                Ok((data_key, helm_key, worker_key))
+            }),
+        )
+    }
+
+    pub fn rotate_helm_key<'a>(
+        &'a self,
+        ark_seed: &'a ArkSeed,
+    ) -> (
+        Progress,
+        impl Future<Output = Result<(HelmKey, WorkerKey)>> + Send + 'a,
+    ) {
+        let (progress, task) = Progress::new(1, "Helm Key Rotation".to_string());
+        (
+            progress,
+            with_receipt(async move |receipt| self._rotate_helm_key(ark_seed, receipt, task).await),
+        )
+    }
+
+    async fn _rotate_helm_key(
+        &self,
+        ark_seed: &ArkSeed,
+        receipt: &mut Receipt,
+        mut task: Task,
+    ) -> anyhow::Result<(HelmKey, WorkerKey)> {
+        task.start();
+
+        let mut verify_seed = task.child(1, "Verify Ark Seed".to_string());
+        let mut read_current_keys = task.child(2, "Retrieve current Key details".to_string());
+        let mut update_keys = task.child(3, "Update Key".to_string());
+        let mut retire_previous = task.child(1, "Retire Previous Manifest".to_string());
+
+        verify_seed.start();
+        self.verify_ark_seed(ark_seed)?;
+        verify_seed.complete();
+
+        read_current_keys.start();
+        let previous_helm_key = self.helm_key(ark_seed).await?;
+        read_current_keys += 1;
+        let previous_worker_key = self.worker_key(&previous_helm_key).await?;
+        read_current_keys.complete();
+
+        update_keys.start();
+        let new_helm_key_seed = HelmKeySeed::random();
+        update_keys += 1;
+        let new_helm_key = ark_seed.helm_key(&new_helm_key_seed);
+        let new_worker_key = self
+            ._rotate_worker_key(
+                &previous_helm_key,
+                &previous_worker_key,
+                &new_helm_key,
                 receipt,
+                update_keys.child(1, "Rotate Worker Key".to_string()),
             )
             .await?;
+        update_keys += 1;
 
-            Ok(new_data_key)
-        })
-        .await
+        self.update_register(&ark_seed.helm_register(), new_helm_key_seed, receipt)
+            .await?;
+        update_keys.complete();
+
+        retire_previous.start();
+        self.retire_manifest(&previous_helm_key, receipt).await?;
+        retire_previous.complete();
+
+        task.complete();
+        Ok((new_helm_key, new_worker_key))
     }
 
-    pub async fn rotate_helm_key(&self, ark_seed: &ArkSeed) -> Result<(HelmKey, WorkerKey)> {
-        with_receipt(async move |receipt| {
-            self.verify_ark_seed(ark_seed)?;
-            let previous_helm_key = self.helm_key(ark_seed).await?;
-            let previous_worker_key = self.worker_key(&previous_helm_key).await?;
-            let new_helm_key_seed = HelmKeySeed::random();
-            let new_helm_key = ark_seed.helm_key(&new_helm_key_seed);
-
-            let new_worker_key = self
-                ._rotate_worker_key(
-                    &previous_helm_key,
-                    &previous_worker_key,
-                    &new_helm_key,
+    pub fn rotate_worker_key_with_seed(
+        &self,
+        ark_seed: &ArkSeed,
+    ) -> (Progress, impl Future<Output = Result<WorkerKey>> + Send) {
+        let (progress, task) = Progress::new(1, "Worker Key Rotation".to_string());
+        (
+            progress,
+            with_receipt(async move |receipt| {
+                self.verify_ark_seed(ark_seed)?;
+                let helm_key = self.helm_key(ark_seed).await?;
+                self._rotate_worker_key(
+                    &helm_key,
+                    &self.worker_key(&helm_key).await?,
+                    &helm_key,
                     receipt,
+                    task,
                 )
-                .await?;
-
-            self.update_register(&ark_seed.helm_register(), new_helm_key_seed, receipt)
-                .await?;
-
-            self.retire_manifest(&previous_helm_key, receipt).await?;
-
-            Ok((new_helm_key, new_worker_key))
-        })
-        .await
+                .await
+            }),
+        )
     }
 
-    pub async fn rotate_worker_key(&self, helm_key: &HelmKey) -> Result<WorkerKey> {
-        with_receipt(async move |receipt| {
-            self._rotate_worker_key(
-                helm_key,
-                &self.worker_key(&helm_key).await?,
-                helm_key,
-                receipt,
-            )
-            .await
-        })
-        .await
+    pub fn rotate_worker_key<'a>(
+        &'a self,
+        helm_key: &'a HelmKey,
+    ) -> (
+        Progress,
+        impl Future<Output = Result<WorkerKey>> + Send + 'a,
+    ) {
+        let (progress, task) = Progress::new(1, "Worker Key Rotation".to_string());
+        (
+            progress,
+            with_receipt(async move |receipt| {
+                self._rotate_worker_key(
+                    helm_key,
+                    &self.worker_key(&helm_key).await?,
+                    helm_key,
+                    receipt,
+                    task,
+                )
+                .await
+            }),
+        )
     }
 
     async fn _rotate_worker_key(
@@ -465,13 +603,26 @@ impl Core {
         previous_worker_key: &WorkerKey,
         new_helm_key: &HelmKey,
         receipt: &mut Receipt,
+        mut task: Task,
     ) -> anyhow::Result<WorkerKey> {
+        task.start();
+
+        let mut read_manifest = task.child(1, "Read Manifest".to_string());
+        let mut derive_new_key = task.child(1, "Derive New Key".to_string());
+        let mut update_network = task.child(2, "Update Network".to_string());
+
+        read_manifest.start();
         let manifest = self
             .get_specific_manifest(&previous_worker_key, previous_helm_key.public_key())
             .await?;
+        read_manifest.complete();
+
+        derive_new_key.start();
         let new_worker_key_seed = WorkerKeySeed::random();
         let new_worker_key = new_helm_key.worker_key(&new_worker_key_seed);
+        derive_new_key.complete();
 
+        update_network.start();
         if previous_helm_key == new_helm_key {
             // Only the `WorkerKey` is rotated, nothing else
             self.update_scratchpad(
@@ -480,12 +631,14 @@ impl Core {
                 receipt,
             )
             .await?;
+            update_network += 1;
             self.update_register(
                 &previous_helm_key.worker_register(),
                 new_worker_key_seed,
                 receipt,
             )
             .await?;
+            update_network += 1;
         } else {
             // Part of a bigger rotation
             self.create_encrypted_scratchpad(
@@ -494,15 +647,17 @@ impl Core {
                 receipt,
             )
             .await?;
-
+            update_network += 1;
             self.create_register(
                 &new_helm_key.worker_register(),
                 new_worker_key_seed,
                 receipt,
             )
             .await?;
+            update_network += 1;
         }
-
+        update_network.complete();
+        task.complete();
         Ok(new_worker_key)
     }
 

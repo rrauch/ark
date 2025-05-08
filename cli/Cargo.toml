@@ -9,8 +9,10 @@ autonomi = { workspace = true }
 clap = { version = "4.5", features = ["derive", "env"] }
 colored = "3"
 core = { path = "../core" }
+futures-util = { workspace = true }
 indicatif = "0.17"
 once_cell = "1.21"
+rpassword = "7.4"
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

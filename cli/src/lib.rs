@@ -1,10 +1,14 @@
+use anyhow::bail;
 use colored::Colorize;
-use core::{ProgressReport, ProgressStatus};
+use core::{ArkSeed, HelmKey, ProgressReport, ProgressStatus};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
+use std::fmt::{Debug, Formatter};
+use std::str::FromStr;
 use std::time::{Duration, SystemTime};
 use tokio::io::{AsyncBufReadExt, BufReader};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 static WAITING_STYLE: Lazy<ProgressStyle> = Lazy::new(|| {
     ProgressStyle::default_bar()
@@ -47,7 +51,7 @@ impl ProgressView {
             refresh_frequency,
         };
 
-        view.process(initial_report, 0, &mut HashSet::new());
+        view.process(initial_report, &mut 0, 0, &mut HashSet::new());
         view
     }
 
@@ -57,7 +61,7 @@ impl ProgressView {
         let mut visited = HashSet::new();
 
         // Recursively process the report tree to update or create bars
-        self.process(current_report, 0, &mut visited);
+        self.process(current_report, &mut 0, 0, &mut visited);
 
         // Clean up bars for reports that no longer exist in the current_report
         let mut stale_ids = Vec::new();
@@ -77,7 +81,14 @@ impl ProgressView {
 
     /// Recursive helper to process each node in the Report tree.
     /// This is called by both `new` (via initial processing) and `update`.
-    fn process(&mut self, report: &ProgressReport, depth: usize, visited: &mut HashSet<usize>) {
+    fn process(
+        &mut self,
+        report: &ProgressReport,
+        idx: &mut usize,
+        depth: usize,
+        visited: &mut HashSet<usize>,
+    ) {
+        *idx += 1;
         let report_id = report.id();
         visited.insert(report_id);
 
@@ -107,7 +118,7 @@ impl ProgressView {
         if !self.bars.contains_key(&report_id) {
             let pb = self
                 .multi_progress
-                .add(ProgressBar::new(total).with_prefix(indent));
+                .insert(*idx - 1, ProgressBar::new(total).with_prefix(indent));
             self.bars.insert(report_id, (pb, None));
         }
 
@@ -159,7 +170,7 @@ impl ProgressView {
 
         // Recurse for subreports
         for sub_report in report.subreports() {
-            self.process(sub_report, depth + 1, visited);
+            self.process(sub_report, idx, depth + 1, visited);
         }
 
         self.tick();
@@ -229,4 +240,89 @@ pub async fn ask_confirmation(question: &str) -> bool {
         }
         line.clear();
     }
+}
+
+pub async fn press_enter_key() {
+    println!();
+    println!("  {}", "Press Enter to continue".dimmed());
+    println!();
+    let mut reader = BufReader::new(tokio::io::stdin());
+    let mut line = String::new();
+    let _ = reader.read_line(&mut line).await;
+}
+
+#[derive(Zeroize, ZeroizeOnDrop, Clone)]
+pub struct ConfidentialString(String);
+
+impl From<String> for ConfidentialString {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl Debug for ConfidentialString {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<redacted>")
+    }
+}
+
+impl AsRef<str> for ConfidentialString {
+    fn as_ref(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+#[derive(Zeroize, ZeroizeOnDrop, Clone)]
+struct ConfidentialStrings(Vec<String>);
+
+impl From<Vec<String>> for ConfidentialStrings {
+    fn from(value: Vec<String>) -> Self {
+        Self(value)
+    }
+}
+
+impl Debug for ConfidentialStrings {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<redacted>[{}]", self.0.len())
+    }
+}
+
+impl AsRef<Vec<String>> for ConfidentialStrings {
+    fn as_ref(&self) -> &Vec<String> {
+        &self.0
+    }
+}
+
+impl AsMut<Vec<String>> for ConfidentialStrings {
+    fn as_mut(&mut self) -> &mut Vec<String> {
+        &mut self.0
+    }
+}
+
+pub async fn read_seed() -> anyhow::Result<ArkSeed> {
+    let mut seed_words = ConfidentialStrings::from(Vec::with_capacity(24));
+    loop {
+        // Use spawn_blocking to run the synchronous rpassword
+        let input = tokio::task::spawn_blocking(|| rpassword::read_password()).await??;
+
+        seed_words.as_mut().extend(
+            input
+                .trim()
+                .split_whitespace()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string()),
+        );
+
+        if seed_words.as_ref().len() == 24 {
+            break;
+        } else if seed_words.as_ref().len() > 24 {
+            bail!("invalid seed, exactly 24 words are expected");
+        }
+    }
+    Ok(ArkSeed::try_from_mnemonic(seed_words.as_ref().join(" "))?)
+}
+
+pub async fn read_helm_key() -> anyhow::Result<HelmKey> {
+    let input = tokio::task::spawn_blocking(|| rpassword::read_password()).await??;
+    Ok(HelmKey::from_str(input.trim())?)
 }
