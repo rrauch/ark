@@ -1,25 +1,28 @@
 mod chunk;
+mod encrypt;
 mod keyring;
 mod keys;
 mod pointer;
 mod register;
 mod scratchpad;
 
+pub(crate) use crate::crypto::encrypt::{EncryptedData, EncryptionScheme};
 use crate::crypto::keyring::KeyRing;
 use crate::crypto::keys::{TypedDerivationIndex, TypedPublicKey, TypedSecretKey};
 use crate::manifest::Manifest;
-use anyhow::{anyhow, bail};
+use anyhow::anyhow;
 use autonomi::client::key_derivation::{DerivationIndex, MainSecretKey};
 use autonomi::register::RegisterAddress;
 use autonomi::{Client, PointerAddress, PublicKey, ScratchpadAddress, SecretKey, XorName};
 use bip39::Mnemonic;
-use blsttc::Ciphertext;
-use bytes::Bytes;
 use sn_bls_ckd::derive_master_sk;
 use sn_curv::elliptic::curves::ECScalar;
-use std::marker::PhantomData;
 use zeroize::Zeroize;
 
+use crate::crypto::encrypt::{
+    AgeEncryptionScheme, AgeSingleKeyEncryptionScheme, PublicKeys, TypedDecryptor, TypedEncryptor,
+    TypedPublicKeys,
+};
 pub(crate) use chunk::{TypedChunk, TypedChunkAddress};
 pub(crate) use pointer::{TypedOwnedPointer, TypedPointerAddress};
 pub(crate) use register::{TypedOwnedRegister, TypedRegisterAddress};
@@ -36,6 +39,78 @@ const MANIFEST_SCRATCHPAD_ENCODING: u64 = 344850175421548714;
 const DATA_KEYRING_NAME: &str = "/ark/v0/data/keyring/scratchpad";
 const DATA_KEYRING_SCRATCHPAD_ENCODING: u64 = 845573457394578892;
 
+macro_rules! impl_decryptor_for {
+    ($key_type:ty, $data_type:ty) => {
+        impl TypedDecryptor<$data_type> for $key_type {
+            type Decryptor = SecretKey;
+
+            fn decryptor(&self) -> &Self::Decryptor {
+                self.as_ref()
+            }
+        }
+    };
+
+    // Overload to implement for multiple data types at once
+    ($key_type:ty, $($data_type:ty),+) => {
+        $(
+            impl_decryptor_for!($key_type, $data_type);
+        )+
+    }
+}
+
+macro_rules! encryptor {
+    ($topic:ident, $($key_name:ident: $key_type:ty),+ $(,)?) => {
+        paste::paste! {
+            #[derive(Debug, Clone, PartialEq, Eq)]
+            pub struct [<$topic Encryptor>] {
+                $(pub $key_name: $key_type,)+
+            }
+
+            impl [<$topic Encryptor>] {
+                pub fn new(
+                    $($key_name: $key_type,)+
+                ) -> Self {
+                    Self {
+                        $($key_name,)+
+                    }
+                }
+
+                pub fn [<encrypt_ $topic:lower>](&self, [<$topic:lower>]: &$topic) -> anyhow::Result<[<Encrypted $topic>]> {
+                    self.encrypt([<$topic:lower>].clone())
+                }
+            }
+
+            impl PublicKeys for [<$topic Encryptor>] {
+                fn iter(&self) -> impl Iterator<Item = &PublicKey> {
+                    let keys: Vec<&PublicKey> = vec![
+                        $(self.$key_name.as_ref(),)+
+                    ];
+
+                    keys.into_iter()
+                }
+            }
+
+            impl TypedPublicKeys<$topic> for [<$topic Encryptor>] {}
+        }
+    };
+}
+
+macro_rules! decryptor {
+    ($topic:ident) => {
+        paste::paste! {
+            pub trait [<$topic Decryptor>] {
+                fn [<decrypt_ $topic:lower>](&self, [<encrypted_ $topic:lower>]: &[<Encrypted $topic>]) -> anyhow::Result<$topic>;
+            }
+
+            impl<T: TypedDecryptor<$topic, Decryptor = SecretKey>> [<$topic Decryptor>] for T {
+                fn [<decrypt_ $topic:lower>](&self, [<encrypted_ $topic:lower>]: &[<Encrypted $topic>]) -> anyhow::Result<$topic> {
+                    self.decrypt([<encrypted_ $topic:lower>])
+                }
+            }
+        }
+    };
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HelmRegisterKind;
 pub type HelmRegister = TypedOwnedRegister<HelmRegisterKind, HelmKeySeed>;
@@ -50,6 +125,7 @@ impl Bech32Secret for HelmKeyKind {
 
 pub type HelmKeySeed = TypedDerivationIndex<HelmKeyKind>;
 pub type HelmKey = TypedSecretKey<HelmKeyKind>;
+impl_decryptor_for!(HelmKey, Manifest);
 
 impl HelmKey {
     pub fn worker_register(&self) -> WorkerRegister {
@@ -113,6 +189,7 @@ impl Bech32Secret for DataKeyKind {
 
 pub type DataKeySeed = TypedDerivationIndex<DataKeyKind>;
 pub type DataKey = TypedSecretKey<DataKeyKind>;
+impl_decryptor_for!(DataKey, Manifest);
 
 impl DataKey {
     pub fn decrypt_data_keyring(
@@ -126,7 +203,10 @@ impl DataKey {
 pub type SealKey = TypedPublicKey<DataKeyKind>;
 
 impl SealKey {
-    pub fn encrypt_data_keyring(&self, keyring: &DataKeyRing) -> EncryptedDataKeyRing {
+    pub fn encrypt_data_keyring(
+        &self,
+        keyring: &DataKeyRing,
+    ) -> anyhow::Result<EncryptedDataKeyRing> {
         self.encrypt(keyring.clone())
     }
 }
@@ -178,7 +258,7 @@ impl WorkerKey {
 pub type PublicWorkerKey = TypedPublicKey<WorkerKeyKind>;
 
 impl PublicWorkerKey {
-    pub fn encrypt_manifest(&self, manifest: &Manifest) -> EncryptedManifest {
+    pub fn encrypt_manifest(&self, manifest: &Manifest) -> anyhow::Result<EncryptedManifest> {
         self.encrypt(manifest.clone())
     }
 }
@@ -205,6 +285,7 @@ impl TryFrom<Mnemonic> for ArkSeed {
 pub struct ArkRoot;
 
 pub type ArkSeed = TypedSecretKey<ArkRoot>;
+impl_decryptor_for!(ArkSeed, Manifest);
 
 impl ArkSeed {
     pub fn random() -> (Self, String) {
@@ -302,52 +383,20 @@ impl ArkAddress {
     }
 }
 
+#[derive(Debug, Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct BridgeKind;
+pub type BridgeAddress = TypedPublicKey<BridgeKind>;
+
+impl Bech32Public for BridgeKind {
+    const HRP: &'static str = "arkbridgepub";
+}
+
 pub trait Bech32Secret {
     const HRP: &'static str;
 }
 
 pub trait Bech32Public {
     const HRP: &'static str;
-}
-
-pub struct EncryptedData<T, V> {
-    inner: Ciphertext,
-    _type: PhantomData<T>,
-    _value_type: PhantomData<V>,
-}
-
-impl<T, V: Retirable> Retirable for EncryptedData<T, V> {}
-
-impl<T, V> EncryptedData<T, V> {
-    fn from_ciphertext(inner: Ciphertext) -> Self {
-        Self {
-            inner,
-            _type: Default::default(),
-            _value_type: Default::default(),
-        }
-    }
-
-    fn try_from_bytes(bytes: impl AsRef<[u8]>) -> anyhow::Result<Self> {
-        let ciphertext = Ciphertext::from_bytes(bytes.as_ref())?;
-        if !ciphertext.verify() {
-            bail!("ciphertext verification failed, not a valid ciphertext");
-        }
-        Ok(Self::from_ciphertext(ciphertext))
-    }
-}
-
-impl<T, V> Into<Bytes> for EncryptedData<T, V> {
-    fn into(self) -> Bytes {
-        Bytes::from(self.inner.to_bytes())
-    }
-}
-
-impl<T, V> TryFrom<Bytes> for EncryptedData<T, V> {
-    type Error = anyhow::Error;
-
-    fn try_from(value: Bytes) -> Result<Self, Self::Error> {
-        EncryptedData::try_from_bytes(value.as_ref())
-    }
 }
 
 pub trait Retirable {}

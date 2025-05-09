@@ -1,5 +1,6 @@
+use crate::crypto::Retirable;
+use crate::crypto::encrypt::{DefaultEncryptionScheme, EncryptedData, EncryptionScheme};
 use crate::crypto::keys::{TypedPublicKey, TypedSecretKey};
-use crate::crypto::{EncryptedData, Retirable};
 use anyhow::{anyhow, bail};
 use autonomi::{Client, Scratchpad, ScratchpadAddress};
 use bytes::Bytes;
@@ -16,9 +17,10 @@ pub trait Content: Into<Bytes> + TryFrom<Bytes> {
     const ENCODING: u64;
 }
 
-pub type EncryptedContent<R, V> = EncryptedData<R, V>;
+pub type EncryptedContent<R, V, S: EncryptionScheme = DefaultEncryptionScheme> =
+    EncryptedData<R, V, S>;
 
-impl<R, V: Content> Content for EncryptedContent<R, V> {
+impl<R, V: Content, S: EncryptionScheme> Content for EncryptedContent<R, V, S> {
     const ENCODING: u64 = V::ENCODING;
 }
 

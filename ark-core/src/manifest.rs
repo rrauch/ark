@@ -32,6 +32,8 @@ impl From<VaultCreationSettings> for VaultConfig {
             name: value.name,
             description: value.description,
             active: value.active,
+            bridge: None,
+            object_type: value.object_type,
         }
     }
 }
@@ -137,6 +139,8 @@ mod protos {
                 name: value.name,
                 description: value.description,
                 active: value.active,
+                bridge: value.bridge.map(|b| b.into()),
+                object_type: Some(value.object_type.into()),
             }
         }
     }
@@ -158,6 +162,11 @@ mod protos {
                 name: value.name,
                 description: value.description,
                 active: value.active,
+                bridge: value.bridge.map(|a| a.try_into()).transpose()?,
+                object_type: value
+                    .object_type
+                    .ok_or(anyhow!("object_type is missing"))?
+                    .try_into()?,
             })
         }
     }

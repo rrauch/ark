@@ -1,9 +1,8 @@
-use crate::crypto::{Bech32Public, Bech32Secret, EncryptedData};
-use anyhow::{anyhow, bail};
+use crate::crypto::{Bech32Public, Bech32Secret};
+use anyhow::bail;
 use autonomi::client::key_derivation::DerivationIndex;
 use bech32::{Bech32m, EncodeError, Hrp};
 use blsttc::{PublicKey, SecretKey};
-use bytes::Bytes;
 use std::fmt::{Display, Formatter};
 use std::marker::PhantomData;
 use std::str::FromStr;
@@ -11,7 +10,7 @@ use zeroize::Zeroize;
 
 #[derive(Zeroize, Debug, Clone, PartialEq, Eq)]
 pub struct TypedSecretKey<T> {
-    inner: SecretKey,
+    pub(super) inner: SecretKey,
     #[zeroize(skip)]
     public_key: TypedPublicKey<T>,
 }
@@ -24,25 +23,6 @@ impl<T> TypedSecretKey<T> {
 
     pub fn public_key(&self) -> &TypedPublicKey<T> {
         &self.public_key
-    }
-
-    pub(super) fn decrypt<V: for<'a> TryFrom<&'a [u8]>>(
-        &self,
-        input: &EncryptedData<T, V>,
-    ) -> anyhow::Result<V>
-    where
-        for<'a> <V as TryFrom<&'a [u8]>>::Error: Display,
-    {
-        let mut plaintext = self
-            .inner
-            .decrypt(&input.inner)
-            .ok_or(anyhow!("unable to decrypt ciphertext"))?;
-        let res = plaintext
-            .as_slice()
-            .try_into()
-            .map_err(|e| anyhow!("error converting plaintext: {}", e));
-        plaintext.zeroize();
-        res
     }
 
     pub(super) fn derive_child<C>(&self, idx: &TypedDerivationIndex<C>) -> TypedSecretKey<C> {
@@ -85,7 +65,7 @@ impl<T: Bech32Secret> FromStr for TypedSecretKey<T> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TypedPublicKey<T> {
-    inner: PublicKey,
+    pub(super) inner: PublicKey,
     _type: PhantomData<T>,
 }
 
@@ -96,12 +76,6 @@ impl<T> TypedPublicKey<T> {
 
     pub(crate) fn as_ref(&self) -> &PublicKey {
         &self.inner
-    }
-
-    pub(super) fn encrypt<V: Into<Bytes>>(&self, input: V) -> EncryptedData<T, V> {
-        let plaintext = input.into();
-        let encrypted = EncryptedData::from_ciphertext(self.inner.encrypt(plaintext.as_ref()));
-        encrypted
     }
 }
 

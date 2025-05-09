@@ -1,4 +1,5 @@
-use crate::crypto::HelmKey;
+use crate::crypto::{BridgeAddress, HelmKey};
+use crate::objects::ObjectType;
 use crate::{Core, Receipt, TypedUuid};
 use bon::Builder;
 use chrono::{DateTime, Utc};
@@ -32,6 +33,7 @@ pub struct VaultCreationSettings {
     pub(crate) description: Option<String>,
     #[builder(default = true)]
     pub(crate) active: bool,
+    pub(crate) object_type: ObjectType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -42,4 +44,6 @@ pub struct VaultConfig {
     pub name: String,
     pub description: Option<String>,
     pub active: bool,
+    pub bridge: Option<BridgeAddress>,
+    pub object_type: ObjectType,
 }

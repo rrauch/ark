@@ -2,6 +2,7 @@ mod ark;
 mod autonomi_config;
 mod crypto;
 mod manifest;
+pub(crate) mod objects;
 mod progress;
 mod vault;
 
@@ -11,10 +12,10 @@ pub use crate::crypto::{
     WorkerKey,
 };
 use crate::crypto::{
-    DataKeySeed, EncryptedData, EncryptedScratchpadContent, HelmKeySeed, PlaintextScratchpad,
-    Retirable, ScratchpadContent, TypedChunk, TypedChunkAddress, TypedOwnedPointer,
-    TypedOwnedRegister, TypedOwnedScratchpad, TypedPointerAddress, TypedRegisterAddress,
-    TypedScratchpadAddress, WorkerKeySeed,
+    DataKeySeed, EncryptedData, EncryptedScratchpadContent, EncryptionScheme, HelmKeySeed,
+    PlaintextScratchpad, Retirable, ScratchpadContent, TypedChunk, TypedChunkAddress,
+    TypedOwnedPointer, TypedOwnedRegister, TypedOwnedScratchpad, TypedPointerAddress,
+    TypedRegisterAddress, TypedScratchpadAddress, WorkerKeySeed,
 };
 pub use crate::manifest::Manifest;
 use crate::progress::Task;
@@ -185,7 +186,7 @@ impl Core {
             self.update_scratchpad(
                 self.seal_key()
                     .await?
-                    .encrypt_data_keyring(&self.derive_data_keyring(&ark_seed).await?),
+                    .encrypt_data_keyring(&self.derive_data_keyring(&ark_seed).await?)?,
                 &ark_seed.data_keyring(),
                 receipt,
             )
@@ -210,10 +211,15 @@ impl Core {
     }
 
     /// Creates a new **ENCRYPTED** scratchpad owned by the given owner yet readable by `R`.
-    async fn create_encrypted_scratchpad<O: Clone + PartialEq, R, V: ScratchpadContent>(
+    async fn create_encrypted_scratchpad<
+        O: Clone + PartialEq,
+        R,
+        V: ScratchpadContent,
+        S: EncryptionScheme,
+    >(
         &self,
-        encrypted_content: EncryptedScratchpadContent<R, V>,
-        owner: &TypedOwnedScratchpad<O, EncryptedData<R, V>>,
+        encrypted_content: EncryptedScratchpadContent<R, V, S>,
+        owner: &TypedOwnedScratchpad<O, EncryptedData<R, V, S>>,
         receipt: &mut Receipt,
     ) -> anyhow::Result<()> {
         self.create_scratchpad(encrypted_content, owner, receipt)
@@ -440,7 +446,7 @@ impl Core {
         self.update_scratchpad(
             new_data_key
                 .public_key()
-                .encrypt_data_keyring(&self.derive_data_keyring(&ark_seed).await?),
+                .encrypt_data_keyring(&self.derive_data_keyring(&ark_seed).await?)?,
             &ark_seed.data_keyring(),
             receipt,
         )
@@ -610,10 +616,9 @@ impl Core {
         let mut read_manifest = task.child(1, "Read Manifest".to_string());
         let mut derive_new_key = task.child(1, "Derive New Key".to_string());
         let mut update_network = task.child(2, "Update Network".to_string());
-
         read_manifest.start();
         let manifest = self
-            .get_specific_manifest(&previous_worker_key, previous_helm_key.public_key())
+            .get_specific_manifest(previous_worker_key, previous_helm_key.public_key())
             .await?;
         read_manifest.complete();
 
@@ -626,7 +631,7 @@ impl Core {
         if previous_helm_key == new_helm_key {
             // Only the `WorkerKey` is rotated, nothing else
             self.update_scratchpad(
-                new_worker_key.public_key().encrypt_manifest(&manifest),
+                new_worker_key.public_key().encrypt_manifest(&manifest)?,
                 &previous_helm_key.manifest(),
                 receipt,
             )
@@ -642,7 +647,7 @@ impl Core {
         } else {
             // Part of a bigger rotation
             self.create_encrypted_scratchpad(
-                new_worker_key.public_key().encrypt_manifest(&manifest),
+                new_worker_key.public_key().encrypt_manifest(&manifest)?,
                 &new_helm_key.manifest(),
                 receipt,
             )
@@ -687,7 +692,9 @@ impl Core {
         }
         self.verify_helm_key(helm_key).await?;
         self.update_scratchpad(
-            self.public_worker_key().await?.encrypt_manifest(&manifest),
+            self.public_worker_key()
+                .await?
+                .encrypt_manifest(&manifest)?,
             &helm_key.manifest(),
             receipt,
         )
@@ -913,7 +920,7 @@ impl<T> TypedUuid<T> {
 }
 
 mod protos {
-    use crate::crypto::ArkAddress;
+    use crate::crypto::{ArkAddress, BridgeAddress};
     use anyhow::{Context, anyhow, bail};
     use bytes::{Buf, BufMut, Bytes, BytesMut};
     use chrono::{DateTime, Utc};
@@ -935,6 +942,22 @@ mod protos {
 
         fn try_from(value: Address) -> Result<Self, Self::Error> {
             ArkAddress::from_str(value.bech32.as_str())
+        }
+    }
+
+    impl From<BridgeAddress> for Address {
+        fn from(value: BridgeAddress) -> Self {
+            Self {
+                bech32: value.to_string(),
+            }
+        }
+    }
+
+    impl TryFrom<Address> for BridgeAddress {
+        type Error = anyhow::Error;
+
+        fn try_from(value: Address) -> Result<Self, Self::Error> {
+            BridgeAddress::from_str(value.bech32.as_str())
         }
     }
 

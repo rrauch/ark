@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package manifest;
 import "protos/common.proto";
+import "protos/objects.proto";
 
 message Manifest {
   common.Address address = 1;
@@ -19,4 +20,6 @@ message Vault {
   string name = 4;
   optional string description = 5;
   bool active = 6;
+  common.Address bridge = 7;
+  objects.ObjectType object_type = 8;
 }

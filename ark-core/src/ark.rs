@@ -55,7 +55,7 @@ pub(crate) async fn create(
     core.create_encrypted_scratchpad(
         data_key
             .public_key()
-            .encrypt_data_keyring(&core.derive_data_keyring(&ark_seed).await?),
+            .encrypt_data_keyring(&core.derive_data_keyring(&ark_seed).await?)?,
         &ark_seed.data_keyring(),
         receipt,
     )
@@ -77,7 +77,7 @@ pub(crate) async fn create(
     let ark_address = ark_seed.address();
     let manifest = Manifest::new(&ark_address, settings);
     core.create_encrypted_scratchpad(
-        worker_key.public_key().encrypt_manifest(&manifest),
+        worker_key.public_key().encrypt_manifest(&manifest)?,
         &helm_key.manifest(),
         receipt,
     )

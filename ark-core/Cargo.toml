@@ -4,6 +4,8 @@ version = "0.0.1"
 edition = "2024"
 
 [dependencies]
+age = "0.11"
+age-core = "0.11"
 anyhow = { workspace = true, features = ["backtrace"] }
 autonomi = { workspace = true }
 ant-bootstrap = "0.2.2"
@@ -15,10 +17,12 @@ bytes = { workspace = true }
 chrono = { workspace = true }
 moka = { version = "0.12", features = ["future"] }
 once_cell = "1.21"
+paste = "1.0"
 prost = "0.13"
 rand = { version = "0.9", features = ["thread_rng"] }
 sn_bls_ckd = "0.2.1"
 sn_curv = { version = "0.10.1", default-features = false, features = ["num-bigint"] }
+thiserror = "1.0"
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 url = { workspace = true }

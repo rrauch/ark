@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package objects;
+
+message ObjectType {
+  oneof type {
+    Filesystem filesystem = 1;
+    Email email = 2;
+    ObjectStorage object_storage = 3;
+  }
+}
+
+message Filesystem {
+  oneof filesystem_type {
+    Posix posix = 1;
+    Windows windows = 2;
+  }
+}
+
+message Posix {}
+message Windows {}
+
+message Email {
+  oneof email_type {
+    Imap imap = 1;
+    Gmail gmail = 2;
+  }
+}
+
+message Imap {}
+message Gmail {}
+
+message ObjectStorage {
+  oneof storage_type {
+    S3 s3 = 1;
+  }
+}
+
+message S3 {}
