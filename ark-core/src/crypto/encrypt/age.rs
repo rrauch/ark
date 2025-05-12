@@ -52,7 +52,7 @@ impl Identity for MySecretKey<'_> {
             }
         }
         if !correct_key {
-            return Some(Err(DecryptError::NoMatchingKeys));
+            return None;
         }
         let ciphertext = match Ciphertext::from_bytes(stanza.body.as_slice()) {
             Ok(c) => c,
