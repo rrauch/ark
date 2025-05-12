@@ -1,8 +1,14 @@
-use crate::VaultId;
 use crate::ark::ArkCreationSettings;
-use crate::crypto::{ArkAddress, Retirable};
+use crate::crypto::{
+    EncryptedData, Retirable, ScratchpadContent, TypedOwnedScratchpad, TypedScratchpadAddress,
+};
+
+use crate::helm_key::HelmKeyKind;
 use crate::protos::{deserialize_with_header, serialize_with_header};
 use crate::vault::{VaultConfig, VaultCreationSettings};
+use crate::worker_key::WorkerKeyKind;
+use crate::{ArkAddress, Core, HelmKey, PublicHelmKey, Receipt, VaultId, WorkerKey};
+use anyhow::bail;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -10,6 +16,8 @@ use uuid::Uuid;
 const MAGIC_NUMBER: &'static [u8; 16] = &[
     0x61, 0x72, 0x6B, 0x5F, 0x6D, 0x61, 0x6E, 0x69, 0x66, 0x65, 0x73, 0x74, 0x5F, 0x76, 0x30, 0x30,
 ];
+
+const MANIFEST_SCRATCHPAD_ENCODING: u64 = 344850175421548714;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Manifest {
@@ -22,6 +30,14 @@ pub struct Manifest {
 }
 
 impl Retirable for Manifest {}
+
+impl ScratchpadContent for Manifest {
+    const ENCODING: u64 = MANIFEST_SCRATCHPAD_ENCODING;
+}
+
+pub type EncryptedManifest = EncryptedData<WorkerKeyKind, Manifest>;
+pub type OwnedManifest = TypedOwnedScratchpad<HelmKeyKind, EncryptedManifest>;
+pub type ManifestAddress = TypedScratchpadAddress<HelmKeyKind, EncryptedManifest>;
 
 impl From<VaultCreationSettings> for VaultConfig {
     fn from(value: VaultCreationSettings) -> Self {
@@ -80,6 +96,59 @@ impl TryFrom<Bytes> for Manifest {
 
     fn try_from(value: Bytes) -> Result<Self, Self::Error> {
         Manifest::deserialize(value)
+    }
+}
+
+impl Core {
+    pub(super) async fn get_manifest(&self, worker_key: &WorkerKey) -> anyhow::Result<Manifest> {
+        let public_helm_key = self.public_helm_key().await?;
+        self.get_specific_manifest(worker_key, &public_helm_key)
+            .await
+    }
+
+    pub(super) async fn get_specific_manifest(
+        &self,
+        worker_key: &WorkerKey,
+        public_helm_key: &PublicHelmKey,
+    ) -> anyhow::Result<Manifest> {
+        let encrypted_manifest = self.read_scratchpad(&public_helm_key.manifest()).await?;
+        worker_key.decrypt_manifest(&encrypted_manifest)
+    }
+
+    pub(super) async fn update_manifest(
+        &self,
+        manifest: &Manifest,
+        helm_key: &HelmKey,
+        receipt: &mut Receipt,
+    ) -> anyhow::Result<u64> {
+        if &manifest.ark_address != &self.ark_address {
+            bail!("manifest ark address does not match given ark address");
+        }
+        self.verify_helm_key(helm_key).await?;
+        self.update_scratchpad(
+            self.public_worker_key()
+                .await?
+                .encrypt_manifest(&manifest)?,
+            &helm_key.manifest(),
+            receipt,
+        )
+        .await
+    }
+
+    pub(super) async fn retire_manifest(
+        &self,
+        helm_key: &HelmKey,
+        receipt: &mut Receipt,
+    ) -> anyhow::Result<()> {
+        if &self.public_helm_key().await? == helm_key.public_key() {
+            bail!(
+                "helm_key is still active for ark [{}], cannot retire manifest",
+                self.ark_address
+            )
+        };
+        self.danger_retire_scratchpad(&helm_key.manifest(), receipt)
+            .await?;
+        Ok(())
     }
 }
 

@@ -1,36 +1,39 @@
 mod ark;
+mod ark_seed;
 mod autonomi_config;
 mod crypto;
+mod data_key;
+mod helm_key;
 mod manifest;
 pub(crate) mod objects;
 mod progress;
 mod vault;
+mod worker_key;
 
-pub use crate::ark::{ArkCreationDetails, ArkCreationSettings};
-pub use crate::crypto::{
-    ArkAddress, ArkSeed, DataKey, DataKeyRing, HelmKey, PublicHelmKey, PublicWorkerKey, SealKey,
-    WorkerKey,
-};
+pub use ark::{ArkCreationDetails, ArkCreationSettings};
+pub use ark_seed::{ArkAddress, ArkSeed};
+pub use autonomi::{Client as AutonomiClient, Wallet as EvmWallet};
+pub use autonomi_config::ClientConfig as AutonomiClientConfig;
+pub use chrono::{DateTime, Utc};
+pub use data_key::{DataKey, SealKey};
+pub use helm_key::{HelmKey, PublicHelmKey};
+pub use manifest::Manifest;
+pub use progress::{Progress, Report as ProgressReport, Status as ProgressStatus};
+pub use vault::{VaultConfig, VaultCreationSettings, VaultId};
+pub use worker_key::{PublicWorkerKey, WorkerKey};
+
 use crate::crypto::{
-    DataKeySeed, EncryptedData, EncryptedScratchpadContent, EncryptionScheme, HelmKeySeed,
-    PlaintextScratchpad, Retirable, ScratchpadContent, TypedChunk, TypedChunkAddress,
-    TypedOwnedPointer, TypedOwnedRegister, TypedOwnedScratchpad, TypedPointerAddress,
-    TypedRegisterAddress, TypedScratchpadAddress, WorkerKeySeed,
+    EncryptedData, EncryptedScratchpadContent, EncryptionScheme, PlaintextScratchpad, Retirable,
+    ScratchpadContent, TypedChunk, TypedChunkAddress, TypedOwnedPointer, TypedOwnedRegister,
+    TypedOwnedScratchpad, TypedPointerAddress, TypedRegisterAddress, TypedScratchpadAddress,
 };
-pub use crate::manifest::Manifest;
-use crate::progress::Task;
-pub use crate::progress::{Progress, Report as ProgressReport, Status as ProgressStatus};
-pub use crate::vault::{VaultConfig, VaultCreationSettings, VaultId};
 use anyhow::{anyhow, bail};
 use autonomi::client::payment::PaymentOption;
 use autonomi::pointer::PointerTarget;
 use autonomi::register::{RegisterAddress, RegisterValue};
 use autonomi::{AttoTokens, Pointer, PointerAddress, Scratchpad, ScratchpadAddress};
-pub use autonomi::{Client as AutonomiClient, Wallet as AutonomiWallet};
-pub use autonomi_config::ClientConfig as AutonomiClientConfig;
 use bon::bon;
 use bytes::Bytes;
-pub use chrono::{DateTime, Utc};
 use moka::future::Cache;
 use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
@@ -99,7 +102,7 @@ async fn with_receipt<T>(f: impl AsyncFnOnce(&mut Receipt) -> anyhow::Result<T>)
 
 pub struct Core {
     client: AutonomiClient,
-    wallet: AutonomiWallet,
+    wallet: EvmWallet,
     ark_address: ArkAddress,
     register_cache: Cache<RegisterAddress, RegisterValue>,
     register_history_cache: Cache<RegisterAddress, Vec<RegisterValue>>,
@@ -112,7 +115,7 @@ impl Core {
     #[builder]
     pub fn new(
         client: AutonomiClient,
-        wallet: AutonomiWallet,
+        wallet: EvmWallet,
         ark_address: ArkAddress,
         #[builder(default = Duration::from_secs(3600))] cache_ttl: Duration,
         #[builder(default = Duration::from_secs(900))] cache_tti: Duration,
@@ -151,63 +154,6 @@ impl Core {
                 .weigher(|_, pad: &Scratchpad| pad.size() as u32)
                 .build(),
         }
-    }
-
-    pub fn create_ark(
-        setting: ArkCreationSettings,
-        client: &AutonomiClient,
-        wallet: &AutonomiWallet,
-    ) -> (
-        Progress,
-        impl Future<Output = Result<ArkCreationDetails>> + Send,
-    ) {
-        let (progress, task) = Progress::new(1, "Ark Creation".to_string());
-
-        let fut = with_receipt(async move |receipt| {
-            ark::create(setting, client, wallet, receipt, task).await
-        });
-
-        (progress, fut)
-    }
-
-    pub async fn create_vault(
-        &self,
-        settings: VaultCreationSettings,
-        helm_key: &HelmKey,
-    ) -> Result<VaultId> {
-        with_receipt(async move |receipt| vault::create(settings, helm_key, &self, receipt).await)
-            .await
-    }
-
-    /// Does a full refresh of the data keyring.
-    pub async fn update_data_keyring(&self, ark_seed: &ArkSeed) -> Result<u64> {
-        with_receipt(async move |receipt| {
-            self.verify_ark_seed(ark_seed)?;
-            self.update_scratchpad(
-                self.seal_key()
-                    .await?
-                    .encrypt_data_keyring(&self.derive_data_keyring(&ark_seed).await?)?,
-                &ark_seed.data_keyring(),
-                receipt,
-            )
-            .await
-        })
-        .await
-    }
-
-    /// Retrieves the **FULL** data key history given a valid `ArkSeed`.
-    async fn derive_data_keyring(&self, ark_seed: &ArkSeed) -> anyhow::Result<DataKeyRing> {
-        self.verify_ark_seed(ark_seed)?;
-        let keyring: DataKeyRing = self
-            .register_history(&ark_seed.public_key().data_register())
-            .await?
-            .into_iter()
-            .map(|seed| ark_seed.data_key(&seed))
-            .collect();
-        if keyring.is_empty() {
-            bail!("data_keyring is empty");
-        }
-        Ok(keyring)
     }
 
     /// Creates a new **ENCRYPTED** scratchpad owned by the given owner yet readable by `R`.
@@ -314,406 +260,6 @@ impl Core {
         self.scratchpad_cache.invalidate(&address).await;
         let (attos, _) = res?;
         receipt.add(attos);
-        Ok(())
-    }
-
-    async fn get_data_keyring(&self, data_key: &DataKey) -> anyhow::Result<DataKeyRing> {
-        self.verify_data_key(data_key).await?;
-        data_key.decrypt_data_keyring(
-            &self
-                .read_scratchpad(&self.ark_address.data_keyring())
-                .await?,
-        )
-    }
-
-    fn verify_ark_seed(&self, ark_seed: &ArkSeed) -> anyhow::Result<()> {
-        if &self.ark_address != ark_seed.address() {
-            bail!("ark_seed not valid for ark_address [{}]", self.ark_address);
-        }
-        Ok(())
-    }
-
-    /// Verify the given `worker_key` against the Ark.
-    /// Ensures the key is the current, active one for the Ark.
-    async fn verify_worker_key(&self, worker_key: &WorkerKey) -> anyhow::Result<()> {
-        if &self.public_worker_key().await? != worker_key.public_key() {
-            bail!("worker_key not valid for ark [{}]", self.ark_address)
-        }
-        Ok(())
-    }
-
-    /// Verify the given `helm_key` against the Ark.
-    /// Ensures the key is the current, active one for the Ark.
-    async fn verify_helm_key(&self, helm_key: &HelmKey) -> anyhow::Result<()> {
-        if &self.public_helm_key().await? != helm_key.public_key() {
-            bail!("helm_key not valid for ark [{}]", self.ark_address)
-        }
-        Ok(())
-    }
-
-    /// Verify the given `data_key` against the Ark.
-    /// Ensures the key is the current, active one for the Ark.
-    async fn verify_data_key(&self, data_key: &DataKey) -> anyhow::Result<()> {
-        if &self.seal_key().await? != data_key.public_key() {
-            bail!("data_key not valid for ark [{}]", self.ark_address)
-        }
-        Ok(())
-    }
-
-    /// Retrieves the active `SealKey`.
-    async fn seal_key(&self) -> anyhow::Result<SealKey> {
-        Ok(self.ark_address.seal_key(
-            &self
-                .read_register(&self.ark_address.data_register())
-                .await?,
-        ))
-    }
-
-    /// Retrieves the active `PublicHelmKey`.
-    async fn public_helm_key(&self) -> anyhow::Result<PublicHelmKey> {
-        Ok(self.ark_address.helm_key(
-            &self
-                .read_register(&self.ark_address.helm_register())
-                .await?,
-        ))
-    }
-
-    /// Retrieves the active `HelmKey`.
-    async fn helm_key(&self, ark_seed: &ArkSeed) -> anyhow::Result<HelmKey> {
-        Ok(ark_seed.helm_key(
-            &self
-                .read_register(&ark_seed.helm_register().address())
-                .await?,
-        ))
-    }
-
-    /// Retrieves the active `PublicWorkerKey`.
-    async fn public_worker_key(&self) -> anyhow::Result<PublicWorkerKey> {
-        let helm_key = self.public_helm_key().await?;
-        Ok(helm_key.worker_key(&self.read_register(&helm_key.worker_register()).await?))
-    }
-
-    /// Retrieves the active secret `WorkerKey`.
-    async fn worker_key(&self, helm_key: &HelmKey) -> anyhow::Result<WorkerKey> {
-        self.verify_helm_key(helm_key).await?;
-        Ok(helm_key.worker_key(
-            &self
-                .read_register(&helm_key.public_key().worker_register())
-                .await?,
-        ))
-    }
-
-    pub fn rotate_data_key<'a>(
-        &'a self,
-        ark_seed: &'a ArkSeed,
-    ) -> (Progress, impl Future<Output = Result<DataKey>> + Send + 'a) {
-        let (progress, task) = Progress::new(1, "Data Key Rotation".to_string());
-        (
-            progress,
-            with_receipt(async move |receipt| self._rotate_data_key(ark_seed, receipt, task).await),
-        )
-    }
-
-    async fn _rotate_data_key(
-        &self,
-        ark_seed: &ArkSeed,
-        receipt: &mut Receipt,
-        mut task: Task,
-    ) -> anyhow::Result<DataKey> {
-        task.start();
-        let mut verify_seed = task.child(1, "Verify Ark Seed".to_string());
-        let mut read_current = task.child(1, "Retrieve current Data Key details".to_string());
-        let mut update_key = task.child(2, "Update Data Key".to_string());
-        let mut update_keyring = task.child(1, "Update Data Keyring".to_string());
-
-        verify_seed.start();
-        self.verify_ark_seed(ark_seed)?;
-        verify_seed.complete();
-
-        read_current.start();
-        let data_register = ark_seed.data_register();
-        read_current.complete();
-
-        update_key.start();
-        let new_data_key_seed = DataKeySeed::random();
-        update_key += 1;
-        let new_data_key = ark_seed.data_key(&new_data_key_seed);
-        self.update_register(&data_register, new_data_key_seed, receipt)
-            .await?;
-        update_key.complete();
-
-        update_keyring.start();
-        self.update_scratchpad(
-            new_data_key
-                .public_key()
-                .encrypt_data_keyring(&self.derive_data_keyring(&ark_seed).await?)?,
-            &ark_seed.data_keyring(),
-            receipt,
-        )
-        .await?;
-        update_keyring.complete();
-
-        task.complete();
-        Ok(new_data_key)
-    }
-
-    pub fn rotate_all_keys<'a>(
-        &'a self,
-        ark_seed: &'a ArkSeed,
-    ) -> (
-        Progress,
-        impl Future<Output = Result<(DataKey, HelmKey, WorkerKey)>> + Send + 'a,
-    ) {
-        let (progress, mut task) = Progress::new(1, "Full Ark Key Rotation".to_string());
-        (
-            progress,
-            with_receipt(async move |receipt| {
-                task.start();
-                let mut verify_seed = task.child(1, "Verify Ark Seed".to_string());
-                let mut hw_keys = task.child(1, "Helm and Worker Key".to_string());
-                let data_key_task = task.child(1, "Data Key".to_string());
-                verify_seed.start();
-                self.verify_ark_seed(ark_seed)?;
-                verify_seed.complete();
-
-                hw_keys.start();
-                let (helm_key, worker_key) = self
-                    ._rotate_helm_key(
-                        &ark_seed,
-                        receipt,
-                        task.child(1, "Rotate Helm Key".to_string()),
-                    )
-                    .await?;
-                hw_keys.complete();
-                let data_key = self
-                    ._rotate_data_key(ark_seed, receipt, data_key_task)
-                    .await?;
-                task.complete();
-                Ok((data_key, helm_key, worker_key))
-            }),
-        )
-    }
-
-    pub fn rotate_helm_key<'a>(
-        &'a self,
-        ark_seed: &'a ArkSeed,
-    ) -> (
-        Progress,
-        impl Future<Output = Result<(HelmKey, WorkerKey)>> + Send + 'a,
-    ) {
-        let (progress, task) = Progress::new(1, "Helm Key Rotation".to_string());
-        (
-            progress,
-            with_receipt(async move |receipt| self._rotate_helm_key(ark_seed, receipt, task).await),
-        )
-    }
-
-    async fn _rotate_helm_key(
-        &self,
-        ark_seed: &ArkSeed,
-        receipt: &mut Receipt,
-        mut task: Task,
-    ) -> anyhow::Result<(HelmKey, WorkerKey)> {
-        task.start();
-
-        let mut verify_seed = task.child(1, "Verify Ark Seed".to_string());
-        let mut read_current_keys = task.child(2, "Retrieve current Key details".to_string());
-        let mut update_keys = task.child(3, "Update Key".to_string());
-        let mut retire_previous = task.child(1, "Retire Previous Manifest".to_string());
-
-        verify_seed.start();
-        self.verify_ark_seed(ark_seed)?;
-        verify_seed.complete();
-
-        read_current_keys.start();
-        let previous_helm_key = self.helm_key(ark_seed).await?;
-        read_current_keys += 1;
-        let previous_worker_key = self.worker_key(&previous_helm_key).await?;
-        read_current_keys.complete();
-
-        update_keys.start();
-        let new_helm_key_seed = HelmKeySeed::random();
-        update_keys += 1;
-        let new_helm_key = ark_seed.helm_key(&new_helm_key_seed);
-        let new_worker_key = self
-            ._rotate_worker_key(
-                &previous_helm_key,
-                &previous_worker_key,
-                &new_helm_key,
-                receipt,
-                update_keys.child(1, "Rotate Worker Key".to_string()),
-            )
-            .await?;
-        update_keys += 1;
-
-        self.update_register(&ark_seed.helm_register(), new_helm_key_seed, receipt)
-            .await?;
-        update_keys.complete();
-
-        retire_previous.start();
-        self.retire_manifest(&previous_helm_key, receipt).await?;
-        retire_previous.complete();
-
-        task.complete();
-        Ok((new_helm_key, new_worker_key))
-    }
-
-    pub fn rotate_worker_key_with_seed(
-        &self,
-        ark_seed: &ArkSeed,
-    ) -> (Progress, impl Future<Output = Result<WorkerKey>> + Send) {
-        let (progress, task) = Progress::new(1, "Worker Key Rotation".to_string());
-        (
-            progress,
-            with_receipt(async move |receipt| {
-                self.verify_ark_seed(ark_seed)?;
-                let helm_key = self.helm_key(ark_seed).await?;
-                self._rotate_worker_key(
-                    &helm_key,
-                    &self.worker_key(&helm_key).await?,
-                    &helm_key,
-                    receipt,
-                    task,
-                )
-                .await
-            }),
-        )
-    }
-
-    pub fn rotate_worker_key<'a>(
-        &'a self,
-        helm_key: &'a HelmKey,
-    ) -> (
-        Progress,
-        impl Future<Output = Result<WorkerKey>> + Send + 'a,
-    ) {
-        let (progress, task) = Progress::new(1, "Worker Key Rotation".to_string());
-        (
-            progress,
-            with_receipt(async move |receipt| {
-                self._rotate_worker_key(
-                    helm_key,
-                    &self.worker_key(&helm_key).await?,
-                    helm_key,
-                    receipt,
-                    task,
-                )
-                .await
-            }),
-        )
-    }
-
-    async fn _rotate_worker_key(
-        &self,
-        previous_helm_key: &HelmKey,
-        previous_worker_key: &WorkerKey,
-        new_helm_key: &HelmKey,
-        receipt: &mut Receipt,
-        mut task: Task,
-    ) -> anyhow::Result<WorkerKey> {
-        task.start();
-
-        let mut read_manifest = task.child(1, "Read Manifest".to_string());
-        let mut derive_new_key = task.child(1, "Derive New Key".to_string());
-        let mut update_network = task.child(2, "Update Network".to_string());
-        read_manifest.start();
-        let manifest = self
-            .get_specific_manifest(previous_worker_key, previous_helm_key.public_key())
-            .await?;
-        read_manifest.complete();
-
-        derive_new_key.start();
-        let new_worker_key_seed = WorkerKeySeed::random();
-        let new_worker_key = new_helm_key.worker_key(&new_worker_key_seed);
-        derive_new_key.complete();
-
-        update_network.start();
-        if previous_helm_key == new_helm_key {
-            // Only the `WorkerKey` is rotated, nothing else
-            self.update_scratchpad(
-                new_worker_key.public_key().encrypt_manifest(&manifest)?,
-                &previous_helm_key.manifest(),
-                receipt,
-            )
-            .await?;
-            update_network += 1;
-            self.update_register(
-                &previous_helm_key.worker_register(),
-                new_worker_key_seed,
-                receipt,
-            )
-            .await?;
-            update_network += 1;
-        } else {
-            // Part of a bigger rotation
-            self.create_encrypted_scratchpad(
-                new_worker_key.public_key().encrypt_manifest(&manifest)?,
-                &new_helm_key.manifest(),
-                receipt,
-            )
-            .await?;
-            update_network += 1;
-            self.create_register(
-                &new_helm_key.worker_register(),
-                new_worker_key_seed,
-                receipt,
-            )
-            .await?;
-            update_network += 1;
-        }
-        update_network.complete();
-        task.complete();
-        Ok(new_worker_key)
-    }
-
-    async fn get_manifest(&self, worker_key: &WorkerKey) -> anyhow::Result<Manifest> {
-        let public_helm_key = self.public_helm_key().await?;
-        self.get_specific_manifest(worker_key, &public_helm_key)
-            .await
-    }
-
-    async fn get_specific_manifest(
-        &self,
-        worker_key: &WorkerKey,
-        public_helm_key: &PublicHelmKey,
-    ) -> anyhow::Result<Manifest> {
-        let encrypted_manifest = self.read_scratchpad(&public_helm_key.manifest()).await?;
-        worker_key.decrypt_manifest(&encrypted_manifest)
-    }
-
-    async fn update_manifest(
-        &self,
-        manifest: &Manifest,
-        helm_key: &HelmKey,
-        receipt: &mut Receipt,
-    ) -> anyhow::Result<u64> {
-        if &manifest.ark_address != &self.ark_address {
-            bail!("manifest ark address does not match given ark address");
-        }
-        self.verify_helm_key(helm_key).await?;
-        self.update_scratchpad(
-            self.public_worker_key()
-                .await?
-                .encrypt_manifest(&manifest)?,
-            &helm_key.manifest(),
-            receipt,
-        )
-        .await
-    }
-
-    async fn retire_manifest(
-        &self,
-        helm_key: &HelmKey,
-        receipt: &mut Receipt,
-    ) -> anyhow::Result<()> {
-        if &self.public_helm_key().await? == helm_key.public_key() {
-            bail!(
-                "helm_key is still active for ark [{}], cannot retire manifest",
-                self.ark_address
-            )
-        };
-        self.danger_retire_scratchpad(&helm_key.manifest(), receipt)
-            .await?;
         Ok(())
     }
 
@@ -920,7 +466,8 @@ impl<T> TypedUuid<T> {
 }
 
 mod protos {
-    use crate::crypto::{ArkAddress, BridgeAddress};
+    use crate::ArkAddress;
+    use crate::crypto::BridgeAddress;
     use anyhow::{Context, anyhow, bail};
     use bytes::{Buf, BufMut, Bytes, BytesMut};
     use chrono::{DateTime, Utc};

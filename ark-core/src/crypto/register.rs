@@ -9,7 +9,7 @@ pub struct TypedOwnedRegister<T, V> {
 }
 
 impl<T: Clone, V> TypedOwnedRegister<T, V> {
-    pub(super) fn new(owner: TypedSecretKey<T>) -> Self {
+    pub(crate) fn new(owner: TypedSecretKey<T>) -> Self {
         let address =
             TypedRegisterAddress::new(RegisterAddress::new(owner.public_key().clone().into()));
         Self { owner, address }
@@ -34,7 +34,7 @@ pub struct TypedRegisterAddress<T, V> {
 }
 
 impl<T, V> TypedRegisterAddress<T, V> {
-    pub(super) fn new(inner: RegisterAddress) -> Self {
+    pub(crate) fn new(inner: RegisterAddress) -> Self {
         let owner = TypedPublicKey::from(inner.owner());
         Self {
             inner,

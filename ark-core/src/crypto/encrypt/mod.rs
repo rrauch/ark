@@ -11,7 +11,7 @@ use std::marker::PhantomData;
 use thiserror::Error;
 use zeroize::Zeroize;
 
-pub(super) use age::{AgeEncryptionScheme, AgeSingleKeyEncryptionScheme};
+pub(crate) use age::{AgeEncryptionScheme, AgeSingleKeyEncryptionScheme};
 
 pub struct EncryptedData<T, V, S: EncryptionScheme = DefaultEncryptionScheme> {
     inner: S::EncryptedData,
@@ -114,7 +114,7 @@ impl<T, V, S: EncryptionScheme> TryFrom<Bytes> for EncryptedData<T, V, S> {
     }
 }
 
-pub(super) trait TypedDecryptor<T> {
+pub(crate) trait TypedDecryptor<T> {
     type Decryptor;
 
     fn decryptor(&self) -> &Self::Decryptor;
@@ -143,7 +143,7 @@ impl<T> TypedDecryptor<T> for TypedSecretKey<T> {
     }
 }
 
-pub(super) trait TypedEncryptor<T> {
+pub(crate) trait TypedEncryptor<T> {
     type Encryptor;
 
     fn encryptor(&self) -> &Self::Encryptor;
@@ -168,7 +168,7 @@ impl<T> TypedEncryptor<T> for TypedPublicKey<T> {
     }
 }
 
-pub(super) trait TypedPublicKeys<T>: PublicKeys {}
+pub(crate) trait TypedPublicKeys<T>: PublicKeys {}
 
 impl<T, E: TypedPublicKeys<T>> TypedEncryptor<T> for E {
     type Encryptor = E;
@@ -178,7 +178,7 @@ impl<T, E: TypedPublicKeys<T>> TypedEncryptor<T> for E {
     }
 }
 
-pub(super) trait PublicKeys {
+pub(crate) trait PublicKeys {
     fn iter(&self) -> impl Iterator<Item = &PublicKey>;
 }
 

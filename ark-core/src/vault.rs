@@ -1,6 +1,7 @@
-use crate::crypto::{BridgeAddress, HelmKey};
+use crate::crypto::BridgeAddress;
+use crate::HelmKey;
 use crate::objects::ObjectType;
-use crate::{Core, Receipt, TypedUuid};
+use crate::{Core, Receipt, TypedUuid, with_receipt};
 use bon::Builder;
 use chrono::{DateTime, Utc};
 
@@ -9,7 +10,7 @@ pub struct VaultKind;
 
 pub type VaultId = TypedUuid<VaultKind>;
 
-pub(crate) async fn create(
+async fn create(
     settings: VaultCreationSettings,
     helm_key: &HelmKey,
     core: &Core,
@@ -46,4 +47,14 @@ pub struct VaultConfig {
     pub active: bool,
     pub bridge: Option<BridgeAddress>,
     pub object_type: ObjectType,
+}
+
+impl Core {
+    pub async fn create_vault(
+        &self,
+        settings: VaultCreationSettings,
+        helm_key: &HelmKey,
+    ) -> crate::Result<VaultId> {
+        with_receipt(async move |receipt| create(settings, helm_key, &self, receipt).await).await
+    }
 }

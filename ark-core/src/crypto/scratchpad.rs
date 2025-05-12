@@ -31,7 +31,7 @@ pub struct TypedOwnedScratchpad<T, V> {
 }
 
 impl<T, V> TypedOwnedScratchpad<T, V> {
-    pub(super) fn new(owner: TypedSecretKey<T>) -> Self {
+    pub(crate) fn new(owner: TypedSecretKey<T>) -> Self {
         let address = TypedScratchpadAddress::new(ScratchpadAddress::new(
             owner.public_key().as_ref().clone(),
         ));
@@ -55,7 +55,7 @@ pub struct TypedScratchpadAddress<T, V> {
 }
 
 impl<T, V> TypedScratchpadAddress<T, V> {
-    pub(super) fn new(inner: ScratchpadAddress) -> Self {
+    pub(crate) fn new(inner: ScratchpadAddress) -> Self {
         let owner = TypedPublicKey::from(inner.owner().clone());
         Self {
             inner,

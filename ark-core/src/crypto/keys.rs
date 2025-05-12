@@ -16,7 +16,7 @@ pub struct TypedSecretKey<T> {
 }
 
 impl<T> TypedSecretKey<T> {
-    pub(super) fn new(inner: SecretKey) -> Self {
+    pub(crate) fn new(inner: SecretKey) -> Self {
         let public_key = TypedPublicKey::from(inner.public_key());
         Self { inner, public_key }
     }
@@ -25,7 +25,7 @@ impl<T> TypedSecretKey<T> {
         &self.public_key
     }
 
-    pub(super) fn derive_child<C>(&self, idx: &TypedDerivationIndex<C>) -> TypedSecretKey<C> {
+    pub(crate) fn derive_child<C>(&self, idx: &TypedDerivationIndex<C>) -> TypedSecretKey<C> {
         TypedSecretKey::new(self.inner.derive_child(idx.inner.as_bytes()))
     }
 
@@ -70,7 +70,7 @@ pub struct TypedPublicKey<T> {
 }
 
 impl<T> TypedPublicKey<T> {
-    pub(super) fn derive_child<C>(&self, idx: &TypedDerivationIndex<C>) -> TypedPublicKey<C> {
+    pub(crate) fn derive_child<C>(&self, idx: &TypedDerivationIndex<C>) -> TypedPublicKey<C> {
         TypedPublicKey::from(self.inner.derive_child(idx.inner.as_bytes()))
     }
 

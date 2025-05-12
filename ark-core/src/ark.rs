@@ -1,16 +1,19 @@
-use crate::crypto::{
-    ArkAddress, DataKey, DataKeySeed, HelmKey, HelmKeySeed, WorkerKey, WorkerKeySeed,
-};
+use crate::data_key::DataKeySeed;
+use crate::helm_key::HelmKeySeed;
 use crate::manifest::Manifest;
 use crate::progress::Task;
-use crate::{ArkSeed, AutonomiClient, AutonomiWallet, Core, Receipt};
+use crate::worker_key::{WorkerKey, WorkerKeySeed};
+use crate::{
+    ArkAddress, ArkSeed, AutonomiClient, Core, EvmWallet, Progress, Receipt, with_receipt,
+};
+use crate::{DataKey, HelmKey};
 use bon::Builder;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-pub(crate) async fn create(
+async fn create(
     settings: ArkCreationSettings,
     client: &AutonomiClient,
-    wallet: &AutonomiWallet,
+    wallet: &EvmWallet,
     receipt: &mut Receipt,
     mut task: Task,
 ) -> anyhow::Result<ArkCreationDetails> {
@@ -124,4 +127,22 @@ pub struct ArkCreationDetails {
     pub worker_key: WorkerKey,
     #[zeroize(skip)]
     pub manifest: Manifest,
+}
+
+impl Core {
+    pub fn create_ark(
+        setting: ArkCreationSettings,
+        client: &AutonomiClient,
+        wallet: &EvmWallet,
+    ) -> (
+        Progress,
+        impl Future<Output = crate::Result<ArkCreationDetails>> + Send,
+    ) {
+        let (progress, task) = Progress::new(1, "Ark Creation".to_string());
+
+        let fut =
+            with_receipt(async move |receipt| create(setting, client, wallet, receipt, task).await);
+
+        (progress, fut)
+    }
 }
