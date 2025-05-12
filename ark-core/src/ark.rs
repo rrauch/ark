@@ -1,6 +1,6 @@
 use crate::data_key::DataKeySeed;
 use crate::helm_key::HelmKeySeed;
-use crate::manifest::Manifest;
+use crate::manifest::{Manifest, ManifestEncryptor};
 use crate::progress::Task;
 use crate::worker_key::{WorkerKey, WorkerKeySeed};
 use crate::{
@@ -81,7 +81,13 @@ async fn create(
     let ark_address = ark_seed.address();
     let manifest = Manifest::new(&ark_address, settings);
     core.create_encrypted_scratchpad(
-        worker_key.public_key().encrypt_manifest(&manifest)?,
+        ManifestEncryptor::new(
+            ark_address.clone(),
+            helm_key.public_key().clone(),
+            worker_key.public_key().clone(),
+            data_key.public_key().clone(),
+        )
+        .encrypt_manifest(&manifest)?,
         &helm_key.manifest(),
         receipt,
     )

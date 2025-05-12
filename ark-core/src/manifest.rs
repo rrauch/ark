@@ -1,13 +1,17 @@
 use crate::ark::ArkCreationSettings;
 use crate::crypto::{
-    EncryptedData, Retirable, ScratchpadContent, TypedOwnedScratchpad, TypedScratchpadAddress,
+    AgeEncryptionScheme, EncryptedData, Retirable, ScratchpadContent, TypedOwnedScratchpad,
+    TypedScratchpadAddress,
 };
 
+use crate::crypto::TypedEncryptor;
 use crate::helm_key::HelmKeyKind;
 use crate::protos::{deserialize_with_header, serialize_with_header};
 use crate::vault::{VaultConfig, VaultCreationSettings};
-use crate::worker_key::WorkerKeyKind;
-use crate::{ArkAddress, Core, HelmKey, PublicHelmKey, Receipt, VaultId, WorkerKey};
+use crate::{
+    ArkAddress, ArkSeed, Core, DataKey, HelmKey, PublicHelmKey, PublicWorkerKey, Receipt, SealKey,
+    VaultId, WorkerKey, decryptor, encryptor, impl_decryptor_for,
+};
 use anyhow::bail;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
@@ -35,7 +39,24 @@ impl ScratchpadContent for Manifest {
     const ENCODING: u64 = MANIFEST_SCRATCHPAD_ENCODING;
 }
 
-pub type EncryptedManifest = EncryptedData<WorkerKeyKind, Manifest>;
+pub(crate) type EncryptedManifest =
+    EncryptedData<Manifest, Manifest, AgeEncryptionScheme<ManifestEncryptor>>;
+
+encryptor!(
+    pub(crate) Manifest,
+    ark_address: ArkAddress,
+    public_helm_key: PublicHelmKey,
+    public_worker_key: PublicWorkerKey,
+    seal_key: SealKey,
+);
+
+decryptor!(pub(crate) Manifest);
+
+impl_decryptor_for!(ArkSeed, Manifest);
+impl_decryptor_for!(HelmKey, Manifest);
+impl_decryptor_for!(WorkerKey, Manifest);
+impl_decryptor_for!(DataKey, Manifest);
+
 pub type OwnedManifest = TypedOwnedScratchpad<HelmKeyKind, EncryptedManifest>;
 pub type ManifestAddress = TypedScratchpadAddress<HelmKeyKind, EncryptedManifest>;
 
@@ -106,13 +127,22 @@ impl Core {
             .await
     }
 
-    pub(super) async fn get_specific_manifest(
+    pub(super) async fn get_specific_manifest<D: ManifestDecryptor>(
         &self,
-        worker_key: &WorkerKey,
+        decryptor: &D,
         public_helm_key: &PublicHelmKey,
     ) -> anyhow::Result<Manifest> {
         let encrypted_manifest = self.read_scratchpad(&public_helm_key.manifest()).await?;
-        worker_key.decrypt_manifest(&encrypted_manifest)
+        decryptor.decrypt_manifest(&encrypted_manifest)
+    }
+
+    pub(super) async fn manifest_encryptor(&self) -> anyhow::Result<ManifestEncryptor> {
+        Ok(ManifestEncryptor::new(
+            self.ark_address.clone(),
+            self.public_helm_key().await?,
+            self.public_worker_key().await?,
+            self.seal_key().await?,
+        ))
     }
 
     pub(super) async fn update_manifest(
@@ -126,7 +156,7 @@ impl Core {
         }
         self.verify_helm_key(helm_key).await?;
         self.update_scratchpad(
-            self.public_worker_key()
+            self.manifest_encryptor()
                 .await?
                 .encrypt_manifest(&manifest)?,
             &helm_key.manifest(),

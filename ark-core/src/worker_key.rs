@@ -1,11 +1,10 @@
 use crate::HelmKey;
 use crate::crypto::{
-    Bech32Secret, TypedDecryptor, TypedDerivationIndex, TypedEncryptor, TypedOwnedRegister,
-    TypedPublicKey, TypedRegisterAddress, TypedSecretKey,
+    Bech32Secret, TypedDerivationIndex, TypedOwnedRegister, TypedPublicKey, TypedRegisterAddress,
+    TypedSecretKey,
 };
-use crate::manifest::EncryptedManifest;
 use crate::progress::Task;
-use crate::{ArkSeed, Core, Manifest, Progress, Receipt, with_receipt};
+use crate::{ArkSeed, Core, Progress, Receipt, with_receipt};
 use anyhow::bail;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -25,22 +24,7 @@ impl Bech32Secret for WorkerKeyKind {
 pub type WorkerKeySeed = TypedDerivationIndex<WorkerKeyKind>;
 pub type WorkerKey = TypedSecretKey<WorkerKeyKind>;
 
-impl WorkerKey {
-    pub fn decrypt_manifest(
-        &self,
-        encrypted_manifest: &EncryptedManifest,
-    ) -> anyhow::Result<Manifest> {
-        self.decrypt(encrypted_manifest)
-    }
-}
-
 pub type PublicWorkerKey = TypedPublicKey<WorkerKeyKind>;
-
-impl PublicWorkerKey {
-    pub fn encrypt_manifest(&self, manifest: &Manifest) -> anyhow::Result<EncryptedManifest> {
-        self.encrypt(manifest.clone())
-    }
-}
 
 impl Core {
     /// Verify the given `worker_key` against the Ark.
@@ -141,10 +125,13 @@ impl Core {
         derive_new_key.complete();
 
         update_network.start();
+        let mut manifest_encryptor = self.manifest_encryptor().await?;
+        manifest_encryptor.public_worker_key = new_worker_key.public_key().clone();
+
         if previous_helm_key == new_helm_key {
             // Only the `WorkerKey` is rotated, nothing else
             self.update_scratchpad(
-                new_worker_key.public_key().encrypt_manifest(&manifest)?,
+                manifest_encryptor.encrypt_manifest(&manifest)?,
                 &previous_helm_key.manifest(),
                 receipt,
             )
@@ -160,7 +147,7 @@ impl Core {
         } else {
             // Part of a bigger rotation
             self.create_encrypted_scratchpad(
-                new_worker_key.public_key().encrypt_manifest(&manifest)?,
+                manifest_encryptor.encrypt_manifest(&manifest)?,
                 &new_helm_key.manifest(),
                 receipt,
             )

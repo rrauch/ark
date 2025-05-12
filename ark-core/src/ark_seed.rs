@@ -5,7 +5,7 @@ use crate::data_key::{
 use crate::helm_key::{HelmKeySeed, HelmRegister, HelmRegisterAddress};
 use crate::{ConfidentialString, DataKey, HelmKey, PublicHelmKey, SealKey, WorkerKey};
 
-use crate::{Core, Manifest, Progress, crypto, impl_decryptor_for, with_receipt};
+use crate::{Core, Progress, crypto, with_receipt};
 use anyhow::bail;
 use autonomi::Client;
 use bip39::Mnemonic;
@@ -38,7 +38,6 @@ impl TryFrom<Mnemonic> for ArkSeed {
 pub struct ArkRoot;
 
 pub type ArkSeed = crypto::TypedSecretKey<ArkRoot>;
-impl_decryptor_for!(ArkSeed, Manifest);
 
 impl ArkSeed {
     pub fn random() -> (Self, ConfidentialString) {
