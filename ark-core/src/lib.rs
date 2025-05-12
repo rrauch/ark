@@ -40,6 +40,7 @@ use std::marker::PhantomData;
 use std::ops::AddAssign;
 use std::time::Duration;
 use uuid::Uuid;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 pub struct LineItem {
     cost: AttoTokens,
@@ -462,6 +463,27 @@ impl<T> TypedUuid<T> {
 
     pub fn into_inner(self) -> Uuid {
         self.inner
+    }
+}
+
+#[derive(Zeroize, ZeroizeOnDrop, Clone)]
+pub struct ConfidentialString(String);
+
+impl From<String> for ConfidentialString {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl Debug for ConfidentialString {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<redacted>")
+    }
+}
+
+impl AsRef<str> for ConfidentialString {
+    fn as_ref(&self) -> &str {
+        self.0.as_str()
     }
 }
 

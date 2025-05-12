@@ -3,7 +3,7 @@ use crate::data_key::{
     DataKeyRingAddress, DataKeyRingOwner, DataKeySeed, DataRegister, DataRegisterAddress,
 };
 use crate::helm_key::{HelmKeySeed, HelmRegister, HelmRegisterAddress};
-use crate::{DataKey, HelmKey, PublicHelmKey, SealKey, WorkerKey};
+use crate::{ConfidentialString, DataKey, HelmKey, PublicHelmKey, SealKey, WorkerKey};
 
 use crate::{Core, Manifest, Progress, crypto, impl_decryptor_for, with_receipt};
 use anyhow::bail;
@@ -41,9 +41,9 @@ pub type ArkSeed = crypto::TypedSecretKey<ArkRoot>;
 impl_decryptor_for!(ArkSeed, Manifest);
 
 impl ArkSeed {
-    pub fn random() -> (Self, String) {
+    pub fn random() -> (Self, ConfidentialString) {
         let mnemonic = Mnemonic::generate(24).expect("24 to be a valid word count");
-        let s = mnemonic.to_string();
+        let s = mnemonic.to_string().into();
 
         let this = Self::try_from(mnemonic).expect("generated mnemonic to lead to valid ark seed");
         (this, s)

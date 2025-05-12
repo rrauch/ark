@@ -1,10 +1,11 @@
+use ark_cli::{ProgressView, ask_confirmation, press_enter_key, read_helm_key, read_seed};
+use ark_core::{
+    ArkAddress, ArkCreationSettings, ArkSeed, AutonomiClientConfig, ConfidentialString, Core,
+    HelmKey,
+};
 use autonomi::{Client, Wallet};
 use clap::{Parser, Subcommand};
-use ark_cli::{
-    ConfidentialString, ProgressView, ask_confirmation, press_enter_key, read_helm_key, read_seed,
-};
 use colored::Colorize;
-use ark_core::{ArkAddress, ArkCreationSettings, ArkSeed, AutonomiClientConfig, Core, HelmKey};
 use futures_util::future::{BoxFuture, FutureExt};
 use std::fmt::{Debug, Display, Formatter};
 use std::time::Duration;
@@ -517,7 +518,7 @@ async fn create_ark(
     println!();
 
     // Format the 24-word mnemonic in a grid (6 rows of 4 words)
-    let words: Vec<&str> = ark_details.mnemonic.split_whitespace().collect();
+    let words: Vec<&str> = ark_details.mnemonic.as_ref().split_whitespace().collect();
     for row in 0..6 {
         let mut row_str = String::from(INDENT);
         for col in 0..4 {

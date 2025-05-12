@@ -252,27 +252,6 @@ pub async fn press_enter_key() {
 }
 
 #[derive(Zeroize, ZeroizeOnDrop, Clone)]
-pub struct ConfidentialString(String);
-
-impl From<String> for ConfidentialString {
-    fn from(value: String) -> Self {
-        Self(value)
-    }
-}
-
-impl Debug for ConfidentialString {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "<redacted>")
-    }
-}
-
-impl AsRef<str> for ConfidentialString {
-    fn as_ref(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
-#[derive(Zeroize, ZeroizeOnDrop, Clone)]
 struct ConfidentialStrings(Vec<String>);
 
 impl From<Vec<String>> for ConfidentialStrings {

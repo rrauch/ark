@@ -4,7 +4,8 @@ use crate::manifest::Manifest;
 use crate::progress::Task;
 use crate::worker_key::{WorkerKey, WorkerKeySeed};
 use crate::{
-    ArkAddress, ArkSeed, AutonomiClient, Core, EvmWallet, Progress, Receipt, with_receipt,
+    ArkAddress, ArkSeed, AutonomiClient, ConfidentialString, Core, EvmWallet, Progress, Receipt,
+    with_receipt,
 };
 use crate::{DataKey, HelmKey};
 use bon::Builder;
@@ -121,7 +122,7 @@ impl ArkCreationSettings {
 pub struct ArkCreationDetails {
     #[zeroize(skip)]
     pub address: ArkAddress,
-    pub mnemonic: String,
+    pub mnemonic: ConfidentialString,
     pub helm_key: HelmKey,
     pub data_key: DataKey,
     pub worker_key: WorkerKey,
