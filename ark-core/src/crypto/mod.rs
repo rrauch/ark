@@ -34,7 +34,7 @@ pub(crate) use scratchpad::{
 macro_rules! impl_decryptor_for {
     ($key_type:ty, $data_type:ty) => {
         impl crate::crypto::TypedDecryptor<$data_type> for $key_type {
-            type Decryptor = SecretKey;
+            type Decryptor = autonomi::SecretKey;
 
             fn decryptor(&self) -> &Self::Decryptor {
                 self.as_ref()
@@ -52,10 +52,10 @@ macro_rules! impl_decryptor_for {
 
 #[macro_export]
 macro_rules! encryptor {
-    ($topic:ident, $($key_name:ident: $key_type:ty),+ $(,)?) => {
+    ($vis:vis $topic:ident, $($key_name:ident: $key_type:ty),+ $(,)?) => {
         paste::paste! {
             #[derive(Debug, Clone, PartialEq, Eq)]
-            pub struct [<$topic Encryptor>] {
+            $vis struct [<$topic Encryptor>] {
                 $(pub $key_name: $key_type,)+
             }
 
@@ -73,9 +73,9 @@ macro_rules! encryptor {
                 }
             }
 
-            impl PublicKeys for [<$topic Encryptor>] {
-                fn iter(&self) -> impl Iterator<Item = &PublicKey> {
-                    let keys: Vec<&PublicKey> = vec![
+            impl crate::crypto::PublicKeys for [<$topic Encryptor>] {
+                fn iter(&self) -> impl Iterator<Item = &autonomi::PublicKey> {
+                    let keys: Vec<&autonomi::PublicKey> = vec![
                         $(self.$key_name.as_ref(),)+
                     ];
 
@@ -83,20 +83,20 @@ macro_rules! encryptor {
                 }
             }
 
-            impl TypedPublicKeys<$topic> for [<$topic Encryptor>] {}
+            impl crate::crypto::TypedPublicKeys<$topic> for [<$topic Encryptor>] {}
         }
     };
 }
 
 #[macro_export]
 macro_rules! decryptor {
-    ($topic:ident) => {
+    ($vis:vis $topic:ident) => {
         paste::paste! {
-            pub trait [<$topic Decryptor>] {
+            $vis trait [<$topic Decryptor>] {
                 fn [<decrypt_ $topic:lower>](&self, [<encrypted_ $topic:lower>]: &[<Encrypted $topic>]) -> anyhow::Result<$topic>;
             }
 
-            impl<T: TypedDecryptor<$topic, Decryptor = SecretKey>> [<$topic Decryptor>] for T {
+            impl<T: crate::crypto::TypedDecryptor<$topic, Decryptor = autonomi::SecretKey>> [<$topic Decryptor>] for T {
                 fn [<decrypt_ $topic:lower>](&self, [<encrypted_ $topic:lower>]: &[<Encrypted $topic>]) -> anyhow::Result<$topic> {
                     self.decrypt([<encrypted_ $topic:lower>])
                 }
