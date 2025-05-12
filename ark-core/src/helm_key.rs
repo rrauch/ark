@@ -1,16 +1,13 @@
 use crate::crypto::{
     Bech32Secret, TypedDerivationIndex, TypedOwnedRegister, TypedPublicKey, TypedRegisterAddress,
-    TypedSecretKey, key_from_name, register_address_from_name, scratchpad_address_from_name,
+    TypedSecretKey, key_from_name, scratchpad_address_from_name,
 };
 use crate::manifest::{ManifestAddress, OwnedManifest};
 use crate::progress::Task;
-use crate::worker_key::{WorkerKeySeed, WorkerRegister, WorkerRegisterAddress};
-use crate::{ArkSeed, Core, Progress, PublicWorkerKey, Receipt, WorkerKey, with_receipt};
+use crate::{ArkSeed, Core, Progress, Receipt, with_receipt};
 use anyhow::bail;
-use autonomi::Client;
 
 const MANIFEST_NAME: &str = "/ark/v0/manifest/scratchpad";
-const WORKER_REGISTER_NAME: &str = "/ark/v0/worker/register";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HelmRegisterKind;
@@ -28,19 +25,6 @@ pub type HelmKeySeed = TypedDerivationIndex<HelmKeyKind>;
 pub type HelmKey = TypedSecretKey<HelmKeyKind>;
 
 impl HelmKey {
-    pub fn worker_register(&self) -> WorkerRegister {
-        let owner = TypedSecretKey::new(Client::register_key_from_name(
-            self.as_ref(),
-            WORKER_REGISTER_NAME,
-        ));
-
-        WorkerRegister::new(owner)
-    }
-
-    pub fn worker_key(&self, seed: &WorkerKeySeed) -> WorkerKey {
-        self.derive_child(seed)
-    }
-
     pub fn manifest(&self) -> OwnedManifest {
         let owner = TypedSecretKey::new(key_from_name(self.as_ref(), MANIFEST_NAME));
 
@@ -50,17 +34,6 @@ impl HelmKey {
 pub type PublicHelmKey = TypedPublicKey<HelmKeyKind>;
 
 impl PublicHelmKey {
-    pub fn worker_register(&self) -> WorkerRegisterAddress {
-        WorkerRegisterAddress::new(register_address_from_name(
-            self.as_ref(),
-            WORKER_REGISTER_NAME,
-        ))
-    }
-
-    pub fn worker_key(&self, seed: &WorkerKeySeed) -> PublicWorkerKey {
-        self.derive_child(seed)
-    }
-
     pub fn manifest(&self) -> ManifestAddress {
         ManifestAddress::new(scratchpad_address_from_name(self.as_ref(), MANIFEST_NAME))
     }
@@ -99,7 +72,7 @@ impl Core {
         ark_seed: &'a ArkSeed,
     ) -> (
         Progress,
-        impl Future<Output = crate::Result<(HelmKey, WorkerKey)>> + Send + 'a,
+        impl Future<Output = crate::Result<HelmKey>> + Send + 'a,
     ) {
         let (progress, task) = Progress::new(1, "Helm Key Rotation".to_string());
         (
@@ -113,12 +86,14 @@ impl Core {
         ark_seed: &ArkSeed,
         receipt: &mut Receipt,
         mut task: Task,
-    ) -> anyhow::Result<(HelmKey, WorkerKey)> {
+    ) -> anyhow::Result<HelmKey> {
         task.start();
 
         let mut verify_seed = task.child(1, "Verify Ark Seed".to_string());
-        let mut read_current_keys = task.child(2, "Retrieve current Key details".to_string());
-        let mut update_keys = task.child(3, "Update Key".to_string());
+        let mut read_current_keys = task.child(1, "Retrieve current Key details".to_string());
+        let mut read_manifest = task.child(2, "Read Manifest".to_string());
+        let mut update_keys = task.child(2, "Update Key".to_string());
+        let mut new_manifest = task.child(1, "Update Manifest".to_string());
         let mut retire_previous = task.child(1, "Retire Previous Manifest".to_string());
 
         verify_seed.start();
@@ -127,34 +102,34 @@ impl Core {
 
         read_current_keys.start();
         let previous_helm_key = self.helm_key(ark_seed).await?;
-        read_current_keys += 1;
-        let previous_worker_key = self.worker_key(&previous_helm_key).await?;
         read_current_keys.complete();
+
+        read_manifest.start();
+        let manifest = self.get_manifest(&previous_helm_key).await?;
+        read_manifest += 1;
+        let mut manifest_encryptor = self.manifest_encryptor(&previous_helm_key).await?;
+        read_manifest.complete();
 
         update_keys.start();
         let new_helm_key_seed = HelmKeySeed::random();
-        update_keys += 1;
         let new_helm_key = ark_seed.helm_key(&new_helm_key_seed);
-        let new_worker_key = self
-            ._rotate_worker_key(
-                &previous_helm_key,
-                &previous_worker_key,
-                &new_helm_key,
-                receipt,
-                update_keys.child(1, "Rotate Worker Key".to_string()),
-            )
-            .await?;
         update_keys += 1;
 
         self.update_register(&ark_seed.helm_register(), new_helm_key_seed, receipt)
             .await?;
+        manifest_encryptor.public_helm_key = new_helm_key.public_key().clone();
         update_keys.complete();
+
+        new_manifest.start();
+        self.create_manifest(&manifest, &new_helm_key, &manifest_encryptor, receipt)
+            .await?;
+        new_manifest.complete();
 
         retire_previous.start();
         self.retire_manifest(&previous_helm_key, receipt).await?;
         retire_previous.complete();
 
         task.complete();
-        Ok((new_helm_key, new_worker_key))
+        Ok(new_helm_key)
     }
 }

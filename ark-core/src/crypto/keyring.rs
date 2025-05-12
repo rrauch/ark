@@ -1,5 +1,5 @@
-use crate::crypto::keys::{TypedPublicKey, TypedSecretKey};
 use crate::crypto::Bech32Secret;
+use crate::crypto::keys::{TypedPublicKey, TypedSecretKey};
 use crate::protos::{deserialize_with_header, serialize_with_header};
 use bytes::Bytes;
 use std::collections::HashMap;
@@ -83,20 +83,10 @@ impl<T: Bech32Secret + Hash + Eq + Clone> TryFrom<&[u8]> for KeyRing<T> {
 }
 
 mod protos {
-    use crate::crypto::keys::TypedSecretKey;
     use crate::crypto::Bech32Secret;
     use std::hash::Hash;
-    use std::str::FromStr;
 
     include!(concat!(env!("OUT_DIR"), "/protos/keyring.rs"));
-
-    impl<T: Bech32Secret> From<TypedSecretKey<T>> for SecretKey {
-        fn from(value: TypedSecretKey<T>) -> Self {
-            Self {
-                bech32: value.danger_to_string(),
-            }
-        }
-    }
 
     impl<T: Bech32Secret> From<super::KeyRing<T>> for KeyRing {
         fn from(value: super::KeyRing<T>) -> Self {
@@ -108,14 +98,6 @@ mod protos {
                     .map(|k| k.into())
                     .collect(),
             }
-        }
-    }
-
-    impl<T: Bech32Secret> TryFrom<SecretKey> for TypedSecretKey<T> {
-        type Error = anyhow::Error;
-
-        fn try_from(value: SecretKey) -> Result<Self, Self::Error> {
-            Self::from_str(value.bech32.as_str())
         }
     }
 

@@ -1,7 +1,7 @@
 use ark_cli::{ProgressView, ask_confirmation, press_enter_key, read_helm_key, read_seed};
 use ark_core::{
     ArkAddress, ArkCreationSettings, ArkSeed, AutonomiClientConfig, ConfidentialString, Core,
-    HelmKey,
+    EitherWorkerKey, HelmKey, PublicWorkerKey,
 };
 use autonomi::{Client, Wallet};
 use clap::{Parser, Subcommand};
@@ -45,11 +45,13 @@ enum ArkCommand {
     /// Create a new Ark
     Create {
         /// Name of the new Ark
-        #[arg(long, short = 'n')]
         name: String,
         /// Description of the new Ark
         #[arg(long, short = 'd')]
         description: Option<String>,
+        /// Public Worker Key
+        #[arg(long, short = 'w')]
+        worker: Option<PublicWorkerKey>,
     },
 }
 
@@ -68,7 +70,6 @@ enum KeyRotateCommand {
     Data,
     /// Rotate the current Helm Key
     ///
-    /// Will also rotate the underlying Worker Key.
     /// Requires the Ark Seed to succeed.
     Helm,
     /// Rotate the current Worker Key
@@ -81,7 +82,11 @@ enum KeyRotateCommand {
     ///
     /// Rotates Data Key, Helm Key & Worker Key
     /// Requires the Ark Seed to succeed.
-    All,
+    All {
+        /// Public Worker Key
+        #[arg(long, short = 'w')]
+        worker: Option<PublicWorkerKey>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -90,11 +95,18 @@ enum WorkerKeyRotateCommand {
     WithHelm {
         /// The Ark Address - e.g. arkaddr1XXXXXX...
         address: ArkAddress,
+        /// Public Worker Key
+        #[arg(long, short = 'w')]
+        worker: Option<PublicWorkerKey>,
     },
     /// Use the Ark Seed to rotate the Worker key.
     ///
     /// The Ark Address is derived automatically.
-    WithSeed,
+    WithSeed {
+        /// Public Worker Key
+        #[arg(long, short = 'w')]
+        worker: Option<PublicWorkerKey>,
+    },
 }
 
 #[tokio::main]
@@ -115,10 +127,15 @@ async fn main() -> anyhow::Result<()> {
         Wallet::new_from_private_key(client.evm_network().clone(), arguments.secret_key.as_ref())?;
 
     match arguments.command {
-        Commands::Ark(ArkCommand::Create { name, description }) => {
+        Commands::Ark(ArkCommand::Create {
+            name,
+            description,
+            worker,
+        }) => {
             create_ark(
                 name,
                 description,
+                worker,
                 &client,
                 &wallet,
                 &arguments.autonomi_config,
@@ -143,12 +160,12 @@ async fn rotate_key(
         KeyRotateCommand::Data => (RotatableKey::Data, "Ark Seed"),
         KeyRotateCommand::Helm => (RotatableKey::Helm, "Ark Seed"),
         KeyRotateCommand::Worker(WorkerKeyRotateCommand::WithHelm { .. }) => {
-            (RotatableKey::Worker, "Helm Key")
+            (RotatableKey::Worker(None), "Helm Key")
         }
-        KeyRotateCommand::Worker(WorkerKeyRotateCommand::WithSeed) => {
-            (RotatableKey::Worker, "Ark Seed")
+        KeyRotateCommand::Worker(WorkerKeyRotateCommand::WithSeed { .. }) => {
+            (RotatableKey::Worker(None), "Ark Seed")
         }
-        KeyRotateCommand::All => (RotatableKey::All, "Ark Seed"),
+        KeyRotateCommand::All { .. } => (RotatableKey::All(None), "Ark Seed"),
     };
 
     action_preview(
@@ -161,8 +178,8 @@ async fn rotate_key(
     let details = match &rotate {
         KeyRotateCommand::Data
         | KeyRotateCommand::Helm
-        | KeyRotateCommand::All
-        | KeyRotateCommand::Worker(WorkerKeyRotateCommand::WithSeed) => {
+        | KeyRotateCommand::All { .. }
+        | KeyRotateCommand::Worker(WorkerKeyRotateCommand::WithSeed { .. }) => {
             let ark_seed = read_seed().await?;
             RotationDetails {
                 address: ark_seed.address().clone(),
@@ -170,7 +187,7 @@ async fn rotate_key(
                 source: RotationSource::ArkSeed(ark_seed),
             }
         }
-        KeyRotateCommand::Worker(WorkerKeyRotateCommand::WithHelm { address }) => {
+        KeyRotateCommand::Worker(WorkerKeyRotateCommand::WithHelm { address, .. }) => {
             let helm_key = read_helm_key().await?;
             RotationDetails {
                 address: address.clone(),
@@ -213,14 +230,14 @@ async fn rotate_key(
         BoxFuture<ark_core::Result<Vec<(RotatableKey, String)>>>,
         //_,
     ) = match details.key {
-        RotatableKey::Worker => {
+        RotatableKey::Worker(new_worker_key) => {
             let (progress, fut) = match &details.source {
                 RotationSource::HelmKey(helm_key) => {
-                    let (progress, fut) = core.rotate_worker_key(helm_key);
+                    let (progress, fut) = core.rotate_worker_key(helm_key, new_worker_key);
                     (progress, fut.boxed())
                 }
                 RotationSource::ArkSeed(seed) => {
-                    let (progress, fut) = core.rotate_worker_key_with_seed(seed);
+                    let (progress, fut) = core.rotate_worker_key_with_seed(seed, new_worker_key);
                     (progress, fut.boxed())
                 }
             };
@@ -228,10 +245,11 @@ async fn rotate_key(
                 progress,
                 async move {
                     let (new_worker_key, receipt) = fut.await?;
-                    Ok((
-                        vec![(RotatableKey::Worker, new_worker_key.danger_to_string())],
-                        receipt,
-                    ))
+                    let mut vec = vec![];
+                    if let EitherWorkerKey::Secret(sk) = &new_worker_key {
+                        vec.push((RotatableKey::Worker(None), sk.danger_to_string()));
+                    }
+                    Ok((vec, receipt))
                 }
                 .boxed(),
             )
@@ -261,35 +279,34 @@ async fn rotate_key(
             (
                 progress,
                 async move {
-                    let ((new_helm_key, new_worker_key), receipt) = fut.await?;
+                    let (new_helm_key, receipt) = fut.await?;
                     Ok((
-                        vec![
-                            (RotatableKey::Helm, new_helm_key.danger_to_string()),
-                            (RotatableKey::Worker, new_worker_key.danger_to_string()),
-                        ],
+                        vec![(RotatableKey::Helm, new_helm_key.danger_to_string())],
                         receipt,
                     ))
                 }
                 .boxed(),
             )
         }
-        RotatableKey::All => {
+        RotatableKey::All(new_worker_key) => {
             let (progress, fut) = match &details.source {
-                RotationSource::ArkSeed(seed) => core.rotate_all_keys(seed),
+                RotationSource::ArkSeed(seed) => core.rotate_all_keys(seed, new_worker_key),
                 _ => unreachable!("only ark seed can rotate helm key"),
             };
             (
                 progress,
                 async move {
                     let ((new_data_key, new_helm_key, new_worker_key), receipt) = fut.await?;
-                    Ok((
-                        vec![
-                            (RotatableKey::Data, new_data_key.danger_to_string()),
-                            (RotatableKey::Helm, new_helm_key.danger_to_string()),
-                            (RotatableKey::Worker, new_worker_key.danger_to_string()),
-                        ],
-                        receipt,
-                    ))
+                    let mut vec = vec![
+                        (RotatableKey::Data, new_data_key.danger_to_string()),
+                        (RotatableKey::Helm, new_helm_key.danger_to_string()),
+                    ];
+
+                    if let EitherWorkerKey::Secret(sk) = new_worker_key {
+                        vec.push((RotatableKey::Worker(None), sk.danger_to_string()));
+                    }
+
+                    Ok((vec, receipt))
                 }
                 .boxed(),
             )
@@ -356,8 +373,8 @@ async fn rotate_key(
 enum RotatableKey {
     Data,
     Helm,
-    Worker,
-    All,
+    Worker(Option<PublicWorkerKey>),
+    All(Option<PublicWorkerKey>),
 }
 
 impl From<&KeyRotateCommand> for RotatableKey {
@@ -365,8 +382,13 @@ impl From<&KeyRotateCommand> for RotatableKey {
         match value {
             KeyRotateCommand::Data => Self::Data,
             KeyRotateCommand::Helm => Self::Helm,
-            KeyRotateCommand::Worker(..) => Self::Worker,
-            KeyRotateCommand::All => Self::All,
+            KeyRotateCommand::Worker(WorkerKeyRotateCommand::WithSeed { worker }) => {
+                Self::Worker(worker.clone())
+            }
+            KeyRotateCommand::Worker(WorkerKeyRotateCommand::WithHelm { worker, .. }) => {
+                Self::Worker(worker.clone())
+            }
+            KeyRotateCommand::All { worker } => Self::All(worker.clone()),
         }
     }
 }
@@ -376,8 +398,8 @@ impl Display for RotatableKey {
         let name = match self {
             Self::Data => "Data Key",
             Self::Helm => "Helm Key",
-            Self::Worker => "Worker Key",
-            Self::All => "All Keys",
+            Self::Worker(_) => "Worker Key",
+            Self::All(_) => "All Keys",
         };
         write!(f, "{}", name)
     }
@@ -397,6 +419,7 @@ struct RotationDetails {
 async fn create_ark(
     name: String,
     description: Option<String>,
+    public_worker_key: Option<PublicWorkerKey>,
     client: &Client,
     wallet: &Wallet,
     autonomi_config: &AutonomiClientConfig,
@@ -404,6 +427,7 @@ async fn create_ark(
     let settings = ArkCreationSettings::builder()
         .name(name)
         .maybe_description(description)
+        .maybe_authorized_worker(public_worker_key)
         .build();
 
     action_preview(
@@ -412,11 +436,17 @@ async fn create_ark(
             format!(
                 r#"{} {}
 {}
-{}"#,
+{}
+{} {}"#,
                 "Name:".bold(),
                 settings.name(),
                 "Description".bold(),
-                settings.description().unwrap_or("<no description>")
+                settings.description().unwrap_or("<no description>"),
+                "Authorized Worker".bold(),
+                settings
+                    .authorized_worker()
+                    .map(|k| k.to_string())
+                    .unwrap_or("<generated automatically>".to_string()),
             )
             .as_str(),
         ),
@@ -509,6 +539,10 @@ async fn create_ark(
     );
     println!();
 
+    println!("{}{}", INDENT, "PUBLIC WORKER KEY:".bold());
+    println!("{}{}", INDENT, ark_details.worker_key.public_key());
+    println!();
+
     println!("{}{}", INDENT, "TOTAL CREATION COST:".bold());
     println!("{}{}", INDENT, receipt.total_cost().to_string().italic());
     println!();
@@ -548,8 +582,10 @@ async fn create_ark(
     println!("{}{}", INDENT, ark_details.helm_key.danger_to_string());
     println!();
 
-    println!("{}{}", INDENT, "WORKER KEY:".bold());
-    println!("{}{}", INDENT, ark_details.worker_key.danger_to_string());
+    if let EitherWorkerKey::Secret(sk) = &ark_details.worker_key {
+        println!("{}{}", INDENT, "WORKER KEY:".bold());
+        println!("{}{}", INDENT, sk.danger_to_string());
+    }
 
     println!();
     println!("{}", "All Good!".green().bold());

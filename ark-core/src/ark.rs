@@ -2,17 +2,17 @@ use crate::data_key::DataKeySeed;
 use crate::helm_key::HelmKeySeed;
 use crate::manifest::{Manifest, ManifestEncryptor};
 use crate::progress::Task;
-use crate::worker_key::{WorkerKey, WorkerKeySeed};
+use crate::worker_key::{EitherWorkerKey, WorkerKey};
 use crate::{
-    ArkAddress, ArkSeed, AutonomiClient, ConfidentialString, Core, EvmWallet, Progress, Receipt,
-    with_receipt,
+    ArkAddress, ArkSeed, AutonomiClient, ConfidentialString, Core, EvmWallet, Progress,
+    PublicWorkerKey, Receipt, with_receipt,
 };
 use crate::{DataKey, HelmKey};
 use bon::Builder;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 async fn create(
-    settings: ArkCreationSettings,
+    mut settings: ArkCreationSettings,
     client: &AutonomiClient,
     wallet: &EvmWallet,
     receipt: &mut Receipt,
@@ -23,7 +23,6 @@ async fn create(
     let mut seed_task = task.child(2, "Ark Seed".to_string());
     let mut helm_key_task = task.child(2, "Helm Key".to_string());
     let mut data_key_task = task.child(3, "Data Key".to_string());
-    let mut worker_key_task = task.child(2, "Worker Key".to_string());
     let mut manifest_task = task.child(1, "Manifest".to_string());
 
     seed_task.start();
@@ -67,28 +66,25 @@ async fn create(
     data_key_task += 1;
     data_key_task.complete();
 
-    worker_key_task.start();
-    let worker_register = helm_key.worker_register();
-    let worker_key_seed = WorkerKeySeed::random();
-    worker_key_task += 1;
-    core.create_register(&worker_register, worker_key_seed.clone(), receipt)
-        .await?;
-    worker_key_task += 2;
-    let worker_key = helm_key.worker_key(&worker_key_seed);
-    worker_key_task.complete();
-
     manifest_task.start();
     let ark_address = ark_seed.address();
-    let manifest = Manifest::new(&ark_address, settings);
-    core.create_encrypted_scratchpad(
-        ManifestEncryptor::new(
+
+    let worker_key: EitherWorkerKey = settings
+        .authorized_worker
+        .take()
+        .map(|pk| pk.into())
+        .unwrap_or(WorkerKey::random().into());
+
+    let manifest = Manifest::new(&ark_address, settings, worker_key.public_key().clone());
+    core.create_manifest(
+        &manifest,
+        &helm_key,
+        &ManifestEncryptor::new(
             ark_address.clone(),
             helm_key.public_key().clone(),
             worker_key.public_key().clone(),
             data_key.public_key().clone(),
-        )
-        .encrypt_manifest(&manifest)?,
-        &helm_key.manifest(),
+        ),
         receipt,
     )
     .await?;
@@ -112,6 +108,7 @@ pub struct ArkCreationSettings {
     #[builder(into)]
     pub(crate) name: String,
     pub(crate) description: Option<String>,
+    pub(crate) authorized_worker: Option<PublicWorkerKey>,
 }
 
 impl ArkCreationSettings {
@@ -122,6 +119,10 @@ impl ArkCreationSettings {
     pub fn description(&self) -> Option<&str> {
         self.description.as_ref().map(|s| s.as_str())
     }
+
+    pub fn authorized_worker(&self) -> Option<&PublicWorkerKey> {
+        self.authorized_worker.as_ref()
+    }
 }
 
 #[derive(Zeroize, ZeroizeOnDrop)]
@@ -131,7 +132,7 @@ pub struct ArkCreationDetails {
     pub mnemonic: ConfidentialString,
     pub helm_key: HelmKey,
     pub data_key: DataKey,
-    pub worker_key: WorkerKey,
+    pub worker_key: EitherWorkerKey,
     #[zeroize(skip)]
     pub manifest: Manifest,
 }

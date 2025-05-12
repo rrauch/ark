@@ -1,8 +1,10 @@
-use crate::crypto::{Bech32Public, Bech32Secret};
+use crate::crypto::{AllowRandom, Bech32Public, Bech32Secret};
 use anyhow::bail;
 use autonomi::client::key_derivation::DerivationIndex;
 use bech32::{Bech32m, EncodeError, Hrp};
 use blsttc::{PublicKey, SecretKey};
+use chrono::{DateTime, Utc};
+use std::cmp::Ordering;
 use std::fmt::{Display, Formatter};
 use std::marker::PhantomData;
 use std::str::FromStr;
@@ -31,6 +33,12 @@ impl<T> TypedSecretKey<T> {
 
     pub(crate) fn as_ref(&self) -> &SecretKey {
         &self.inner
+    }
+}
+
+impl<T: AllowRandom> TypedSecretKey<T> {
+    pub fn random() -> Self {
+        Self::new(SecretKey::random())
     }
 }
 
@@ -125,6 +133,97 @@ impl<T: Bech32Public> FromStr for TypedPublicKey<T> {
         Ok(Self::from(PublicKey::from_bytes(
             bytes.try_into().expect("byte vec of len 48"),
         )?))
+    }
+}
+
+#[derive(Debug, Clone, Hash)]
+pub struct RetiredKey<T> {
+    inner: TypedPublicKey<T>,
+    retired_at: DateTime<Utc>,
+}
+
+impl<T> RetiredKey<T> {
+    pub fn new(inner: TypedPublicKey<T>, retired_at: DateTime<Utc>) -> Self {
+        (inner, retired_at).into()
+    }
+
+    pub fn retired_at(&self) -> &DateTime<Utc> {
+        &self.retired_at
+    }
+
+    pub fn into_inner(self) -> TypedPublicKey<T> {
+        self.inner
+    }
+}
+
+impl<T: Eq> Eq for RetiredKey<T> {}
+
+impl<T: PartialEq> PartialEq<Self> for RetiredKey<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner.eq(&other.inner) && self.retired_at.eq(&other.retired_at)
+    }
+}
+
+impl<T: PartialEq> PartialOrd<Self> for RetiredKey<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.retired_at.partial_cmp(&other.retired_at)
+    }
+}
+
+impl<T: Eq> Ord for RetiredKey<T> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.retired_at.cmp(&other.retired_at)
+    }
+}
+
+impl<T> AsRef<TypedPublicKey<T>> for RetiredKey<T> {
+    fn as_ref(&self) -> &TypedPublicKey<T> {
+        &self.inner
+    }
+}
+
+impl<T> From<(TypedPublicKey<T>, DateTime<Utc>)> for RetiredKey<T> {
+    fn from(value: (TypedPublicKey<T>, DateTime<Utc>)) -> Self {
+        Self {
+            inner: value.0,
+            retired_at: value.1,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum EitherKey<T> {
+    Secret(TypedSecretKey<T>),
+    Public(TypedPublicKey<T>),
+}
+
+impl<T> EitherKey<T> {
+    pub fn public_key(&self) -> &TypedPublicKey<T> {
+        match self {
+            Self::Secret(sk) => sk.public_key(),
+            Self::Public(pk) => pk,
+        }
+    }
+}
+
+impl<T> From<TypedPublicKey<T>> for EitherKey<T> {
+    fn from(value: TypedPublicKey<T>) -> Self {
+        Self::Public(value)
+    }
+}
+
+impl<T> From<TypedSecretKey<T>> for EitherKey<T> {
+    fn from(value: TypedSecretKey<T>) -> Self {
+        Self::Secret(value)
+    }
+}
+
+impl<T> Zeroize for EitherKey<T> {
+    fn zeroize(&mut self) {
+        match self {
+            Self::Secret(sk) => sk.zeroize(),
+            Self::Public(_) => {}
+        }
     }
 }
 

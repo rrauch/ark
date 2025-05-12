@@ -148,6 +148,7 @@ impl Core {
         let mut read_current = task.child(1, "Retrieve current Data Key details".to_string());
         let mut update_key = task.child(2, "Update Data Key".to_string());
         let mut update_keyring = task.child(1, "Update Data Keyring".to_string());
+        let mut update_manifest = task.child(3, "Update Manifest".to_string());
 
         verify_seed.start();
         self.verify_ark_seed(ark_seed)?;
@@ -175,6 +176,14 @@ impl Core {
         )
         .await?;
         update_keyring.complete();
+
+        update_manifest.start();
+        let manifest = self.get_manifest(ark_seed).await?;
+        update_manifest += 1;
+        let helm_key = self.helm_key(ark_seed).await?;
+        update_manifest += 1;
+        self.update_manifest(&manifest, &helm_key, receipt).await?;
+        update_manifest.complete();
 
         task.complete();
         Ok(new_data_key)

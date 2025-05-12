@@ -3,14 +3,15 @@ use crate::crypto::{
     AgeEncryptionScheme, EncryptedData, Retirable, ScratchpadContent, TypedOwnedScratchpad,
     TypedScratchpadAddress,
 };
+use std::collections::BTreeSet;
 
 use crate::crypto::TypedEncryptor;
 use crate::helm_key::HelmKeyKind;
 use crate::protos::{deserialize_with_header, serialize_with_header};
 use crate::vault::{VaultConfig, VaultCreationSettings};
 use crate::{
-    ArkAddress, ArkSeed, Core, DataKey, HelmKey, PublicHelmKey, PublicWorkerKey, Receipt, SealKey,
-    VaultId, WorkerKey, decryptor, encryptor, impl_decryptor_for,
+    ArkAddress, ArkSeed, Core, DataKey, HelmKey, PublicHelmKey, PublicWorkerKey, Receipt,
+    RetiredWorkerKey, SealKey, VaultId, WorkerKey, decryptor, encryptor, impl_decryptor_for,
 };
 use anyhow::bail;
 use bytes::Bytes;
@@ -30,6 +31,8 @@ pub struct Manifest {
     pub last_modified: DateTime<Utc>,
     pub name: String,
     pub description: Option<String>,
+    pub authorized_worker: PublicWorkerKey,
+    pub retired_workers: BTreeSet<RetiredWorkerKey>,
     pub vaults: Vec<VaultConfig>,
 }
 
@@ -76,7 +79,11 @@ impl From<VaultCreationSettings> for VaultConfig {
 }
 
 impl Manifest {
-    pub(super) fn new(address: &ArkAddress, settings: ArkCreationSettings) -> Self {
+    pub(super) fn new(
+        address: &ArkAddress,
+        settings: ArkCreationSettings,
+        authorized_worker: PublicWorkerKey,
+    ) -> Self {
         Self {
             ark_address: address.clone(),
             created: Utc::now(),
@@ -84,7 +91,18 @@ impl Manifest {
             name: settings.name,
             description: settings.description,
             vaults: Default::default(),
+            authorized_worker,
+            retired_workers: Default::default(),
         }
+    }
+
+    pub(crate) fn update_worker(&mut self, new_worker: &PublicWorkerKey) {
+        let previous = std::mem::replace(&mut self.authorized_worker, new_worker.clone());
+        if &previous == new_worker {
+            return;
+        }
+        let retired = RetiredWorkerKey::new(previous, Utc::now());
+        self.retired_workers.insert(retired);
     }
 
     pub(super) fn deserialize(data: impl AsRef<[u8]>) -> anyhow::Result<Self> {
@@ -121,9 +139,27 @@ impl TryFrom<Bytes> for Manifest {
 }
 
 impl Core {
-    pub(super) async fn get_manifest(&self, worker_key: &WorkerKey) -> anyhow::Result<Manifest> {
+    pub(crate) async fn create_manifest(
+        &self,
+        manifest: &Manifest,
+        helm_key: &HelmKey,
+        manifest_encryptor: &ManifestEncryptor,
+        receipt: &mut Receipt,
+    ) -> anyhow::Result<()> {
+        self.create_encrypted_scratchpad(
+            manifest_encryptor.encrypt_manifest(&manifest)?,
+            &helm_key.manifest(),
+            receipt,
+        )
+        .await
+    }
+
+    pub(super) async fn get_manifest<D: ManifestDecryptor>(
+        &self,
+        decryptor: &D,
+    ) -> anyhow::Result<Manifest> {
         let public_helm_key = self.public_helm_key().await?;
-        self.get_specific_manifest(worker_key, &public_helm_key)
+        self.get_specific_manifest(decryptor, &public_helm_key)
             .await
     }
 
@@ -136,11 +172,14 @@ impl Core {
         decryptor.decrypt_manifest(&encrypted_manifest)
     }
 
-    pub(super) async fn manifest_encryptor(&self) -> anyhow::Result<ManifestEncryptor> {
+    pub(super) async fn manifest_encryptor<D: ManifestDecryptor>(
+        &self,
+        decryptor: &D,
+    ) -> anyhow::Result<ManifestEncryptor> {
         Ok(ManifestEncryptor::new(
             self.ark_address.clone(),
             self.public_helm_key().await?,
-            self.public_worker_key().await?,
+            self.public_worker_key(decryptor).await?,
             self.seal_key().await?,
         ))
     }
@@ -156,7 +195,7 @@ impl Core {
         }
         self.verify_helm_key(helm_key).await?;
         self.update_scratchpad(
-            self.manifest_encryptor()
+            self.manifest_encryptor(helm_key)
                 .await?
                 .encrypt_manifest(&manifest)?,
             &helm_key.manifest(),
@@ -185,6 +224,7 @@ impl Core {
 mod protos {
     use crate::VaultId;
     use anyhow::anyhow;
+    use std::collections::BTreeSet;
 
     include!(concat!(env!("OUT_DIR"), "/protos/manifest.rs"));
 
@@ -196,6 +236,12 @@ mod protos {
                 created: Some(value.created.into()),
                 last_modified: Some(value.last_modified.into()),
                 description: value.description,
+                authorized_worker: Some(value.authorized_worker.into()),
+                retired_workers: value
+                    .retired_workers
+                    .into_iter()
+                    .map(|w| w.into())
+                    .collect::<Vec<_>>(),
                 vaults: value.vaults.into_iter().map(|v| v.into()).collect(),
             }
         }
@@ -220,6 +266,15 @@ mod protos {
                     .ok_or(anyhow!("last_modified is missing"))?
                     .try_into()?,
                 description: value.description,
+                authorized_worker: value
+                    .authorized_worker
+                    .ok_or(anyhow!("authorized_worker is missing"))?
+                    .try_into()?,
+                retired_workers: value
+                    .retired_workers
+                    .into_iter()
+                    .map(|r| r.try_into())
+                    .collect::<anyhow::Result<BTreeSet<super::RetiredWorkerKey>>>()?,
                 vaults: value
                     .vaults
                     .into_iter()

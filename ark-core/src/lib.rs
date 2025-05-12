@@ -20,7 +20,7 @@ pub use helm_key::{HelmKey, PublicHelmKey};
 pub use manifest::Manifest;
 pub use progress::{Progress, Report as ProgressReport, Status as ProgressStatus};
 pub use vault::{VaultConfig, VaultCreationSettings, VaultId};
-pub use worker_key::{PublicWorkerKey, WorkerKey};
+pub use worker_key::{EitherWorkerKey, PublicWorkerKey, RetiredWorkerKey, WorkerKey};
 
 use crate::crypto::{
     EncryptedData, EncryptedScratchpadContent, EncryptionScheme, PlaintextScratchpad, Retirable,
@@ -489,11 +489,14 @@ impl AsRef<str> for ConfidentialString {
 
 mod protos {
     use crate::ArkAddress;
-    use crate::crypto::BridgeAddress;
+    use crate::crypto::{
+        Bech32Public, Bech32Secret, BridgeAddress, Retirable, TypedPublicKey, TypedSecretKey,
+    };
     use anyhow::{Context, anyhow, bail};
     use bytes::{Buf, BufMut, Bytes, BytesMut};
     use chrono::{DateTime, Utc};
     use prost::Message;
+    use std::fmt::Display;
     use std::str::FromStr;
 
     include!(concat!(env!("OUT_DIR"), "/protos/common.rs"));
@@ -572,6 +575,75 @@ mod protos {
     impl From<Uuid> for uuid::Uuid {
         fn from(value: Uuid) -> Self {
             From::from(&value)
+        }
+    }
+
+    impl<T: Bech32Secret> From<TypedSecretKey<T>> for SecretKey {
+        fn from(value: TypedSecretKey<T>) -> Self {
+            Self {
+                bech32: value.danger_to_string(),
+            }
+        }
+    }
+
+    impl<T: Bech32Secret> TryFrom<SecretKey> for TypedSecretKey<T> {
+        type Error = anyhow::Error;
+
+        fn try_from(value: SecretKey) -> Result<Self, Self::Error> {
+            Self::from_str(value.bech32.as_str())
+        }
+    }
+
+    impl<T: Bech32Public> From<TypedPublicKey<T>> for PublicKey {
+        fn from(value: TypedPublicKey<T>) -> Self {
+            Self {
+                bech32: value.to_string(),
+            }
+        }
+    }
+
+    impl<T: Bech32Public> TryFrom<PublicKey> for TypedPublicKey<T> {
+        type Error = anyhow::Error;
+
+        fn try_from(value: PublicKey) -> Result<Self, Self::Error> {
+            Self::from_str(value.bech32.as_str())
+        }
+    }
+
+    impl<T> From<crate::crypto::RetiredKey<T>> for RetiredKey
+    where
+        PublicKey: From<TypedPublicKey<T>>,
+        T: Retirable,
+    {
+        fn from(value: crate::crypto::RetiredKey<T>) -> Self {
+            Self {
+                retired_at: Some(value.retired_at().clone().into()),
+                public_key: Some(value.into_inner().into()),
+            }
+        }
+    }
+
+    impl<T> TryFrom<RetiredKey> for crate::crypto::RetiredKey<T>
+    where
+        TypedPublicKey<T>: TryFrom<PublicKey>,
+        <TypedPublicKey<T> as TryFrom<PublicKey>>::Error: Display,
+        T: Retirable,
+    {
+        type Error = anyhow::Error;
+
+        fn try_from(value: RetiredKey) -> Result<Self, Self::Error> {
+            Ok(Self::new(
+                value
+                    .public_key
+                    .map(|pk| pk.try_into().map_err(|e| anyhow!("{}", e)))
+                    .transpose()?
+                    .ok_or(anyhow!("public_key is missing"))?,
+                value
+                    .retired_at
+                    .map(|r| r.try_into())
+                    .transpose()?
+                    .ok_or(anyhow!("retired_at is missing"))?,
+            ))
         }
     }
 

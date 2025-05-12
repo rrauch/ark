@@ -1,5 +1,5 @@
-use crate::crypto::BridgeAddress;
 use crate::HelmKey;
+use crate::crypto::BridgeAddress;
 use crate::objects::ObjectType;
 use crate::{Core, Receipt, TypedUuid, with_receipt};
 use bon::Builder;
@@ -17,8 +17,7 @@ async fn create(
     receipt: &mut Receipt,
 ) -> anyhow::Result<VaultId> {
     core.verify_helm_key(helm_key).await?;
-    let worker_key = core.worker_key(helm_key).await?;
-    let mut manifest = core.get_manifest(&worker_key).await?;
+    let mut manifest = core.get_manifest(helm_key).await?;
     let vault_config = VaultConfig::from(settings);
     let id = vault_config.id;
     manifest.vaults.push(vault_config.clone());

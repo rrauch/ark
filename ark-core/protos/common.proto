@@ -11,6 +11,19 @@ message Address {
   string bech32 = 1;
 }
 
+message PublicKey {
+  string bech32 = 1;
+}
+
+message SecretKey {
+  string bech32 = 1;
+}
+
+message RetiredKey {
+  PublicKey public_key = 1;
+  Timestamp retired_at = 2;
+}
+
 message Uuid {
   uint64 most_significant = 1;
   uint64 least_significant = 2;

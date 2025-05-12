@@ -3,7 +3,9 @@ use crate::data_key::{
     DataKeyRingAddress, DataKeyRingOwner, DataKeySeed, DataRegister, DataRegisterAddress,
 };
 use crate::helm_key::{HelmKeySeed, HelmRegister, HelmRegisterAddress};
-use crate::{ConfidentialString, DataKey, HelmKey, PublicHelmKey, SealKey, WorkerKey};
+use crate::{
+    ConfidentialString, DataKey, EitherWorkerKey, HelmKey, PublicHelmKey, PublicWorkerKey, SealKey,
+};
 
 use crate::{Core, Progress, crypto, with_receipt};
 use anyhow::bail;
@@ -147,9 +149,10 @@ impl Core {
     pub fn rotate_all_keys<'a>(
         &'a self,
         ark_seed: &'a ArkSeed,
+        new_worker_key: Option<PublicWorkerKey>,
     ) -> (
         Progress,
-        impl Future<Output = crate::Result<(DataKey, HelmKey, WorkerKey)>> + Send + 'a,
+        impl Future<Output = crate::Result<(DataKey, HelmKey, EitherWorkerKey)>> + Send + 'a,
     ) {
         let (progress, mut task) = Progress::new(1, "Full Ark Key Rotation".to_string());
         (
@@ -157,26 +160,28 @@ impl Core {
             with_receipt(async move |receipt| {
                 task.start();
                 let mut verify_seed = task.child(1, "Verify Ark Seed".to_string());
-                let mut hw_keys = task.child(1, "Helm and Worker Key".to_string());
+                let helm_key_task = task.child(2, "Helm Key".to_string());
+                let worker_key_task = task.child(1, "Worker Key".to_string());
                 let data_key_task = task.child(1, "Data Key".to_string());
+
                 verify_seed.start();
                 self.verify_ark_seed(ark_seed)?;
                 verify_seed.complete();
 
-                hw_keys.start();
-                let (helm_key, worker_key) = self
-                    ._rotate_helm_key(
-                        &ark_seed,
-                        receipt,
-                        task.child(1, "Rotate Helm Key".to_string()),
-                    )
+                let helm_key = self
+                    ._rotate_helm_key(&ark_seed, receipt, helm_key_task)
                     .await?;
-                hw_keys.complete();
+
+                let new_worker_key = self
+                    ._rotate_worker_key(&helm_key, new_worker_key, receipt, worker_key_task)
+                    .await?;
+
                 let data_key = self
                     ._rotate_data_key(ark_seed, receipt, data_key_task)
                     .await?;
+                
                 task.complete();
-                Ok((data_key, helm_key, worker_key))
+                Ok((data_key, helm_key, new_worker_key))
             }),
         )
     }

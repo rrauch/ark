@@ -10,6 +10,8 @@ message Manifest {
   common.Timestamp last_modified = 3;
   string name = 4;
   optional string description = 5;
+  common.PublicKey authorized_worker = 6;
+  repeated common.RetiredKey retired_workers = 7;
   repeated Vault vaults = 25;
 }
 
