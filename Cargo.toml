@@ -1,10 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["ark-core", "ark-cli", "ark-engine"]
+members = ["ark-core", "ark-cli", "ark-engine", "ark-transport"]
 
 [workspace.dependencies]
 anyhow = "1.0"
-autonomi = "0.4.5"
+autonomi = "0.4.6"
+bip39 = "2.1.0"
 bytes = "1.10"
 chrono = "0.4"
 futures = "0.3"
@@ -13,3 +14,14 @@ tokio = "1.44"
 tracing = "0.1"
 url = "2.5"
 zeroize = "1.8"
+
+[patch.crates-io]
+# to work around conflicting versions of `unicode-normalization` between `bip39` and `precis-core` (via `iroh`)
+# github issue here: https://github.com/rust-bitcoin/rust-bip39/issues/73
+bip39 = { path = "local-patches/rust-bip39-2.1.0" }
+
+# this fork is patched to use a newer version of hickory to avoid conflicts with iroh
+libp2p-dns = { git = "https://github.com/rrauch/rust-libp2p-fix.git", branch = "0.55.0-fix" }
+libp2p-core = { git = "https://github.com/rrauch/rust-libp2p-fix.git", branch = "0.55.0-fix" }
+libp2p-swarm = { git = "https://github.com/rrauch/rust-libp2p-fix.git", branch = "0.55.0-fix" }
+# more overrides may be necessary

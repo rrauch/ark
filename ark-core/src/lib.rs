@@ -9,6 +9,7 @@ pub(crate) mod objects;
 mod progress;
 mod vault;
 mod worker_key;
+mod announcement;
 
 pub use ark::{ArkCreationDetails, ArkCreationSettings};
 pub use ark_seed::{ArkAddress, ArkSeed};

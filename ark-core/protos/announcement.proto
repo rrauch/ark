@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package announcement;
+
+message NetworkPresence {
+  oneof type {
+    Iroh iroh = 1;
+  }
+}
+
+message Iroh {
+  bytes node_id = 1;
+}
+
+message EngineAnnouncement {
+  repeated NetworkPresence network_presence = 1;
+}
+
+message BridgeAnnouncement {
+  repeated NetworkPresence network_presence = 1;
+}

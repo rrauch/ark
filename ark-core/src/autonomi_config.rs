@@ -58,7 +58,6 @@ impl ClientConfig {
             Network::TestNet => {
                 config.evm_network = EvmNetwork::ArbitrumSepoliaTest;
                 self.set_network_id(&mut config);
-                Self::disable_mainnet_contacts(&mut config);
                 self.set_ignore_cache(&mut config);
                 self.set_bootstrap_cache(&mut config);
             }
@@ -69,7 +68,6 @@ impl ClientConfig {
                     local_config.data_payments_addr.as_str(),
                 );
                 self.set_network_id(&mut config);
-                Self::disable_mainnet_contacts(&mut config);
                 config.init_peers_config.local = true;
                 config.init_peers_config.ignore_cache = true;
             }
@@ -123,10 +121,6 @@ impl ClientConfig {
         if let Some(network_id) = self.network_id {
             config.network_id = Some(network_id);
         }
-    }
-
-    fn disable_mainnet_contacts(config: &mut AutonomiClientConfig) {
-        config.init_peers_config.disable_mainnet_contacts = true;
     }
 
     pub fn to_url(&self) -> Url {

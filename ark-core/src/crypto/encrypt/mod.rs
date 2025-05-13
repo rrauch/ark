@@ -19,6 +19,12 @@ pub struct EncryptedData<T, V, S: EncryptionScheme = DefaultEncryptionScheme> {
     _value_type: PhantomData<V>,
 }
 
+impl<T, V, S: EncryptionScheme> AsRef<S::EncryptedData> for EncryptedData<T, V, S> {
+    fn as_ref(&self) -> &S::EncryptedData {
+        &self.inner
+    }
+}
+
 impl<T, V: Retirable, S: EncryptionScheme> Retirable for EncryptedData<T, V, S> {}
 
 pub trait EncryptionScheme {
@@ -126,7 +132,7 @@ pub(crate) trait TypedDecryptor<T> {
     where
         for<'a> <V as TryFrom<&'a [u8]>>::Error: Display,
     {
-        let mut plaintext = S::decrypt(&input.inner, self.decryptor())?;
+        let mut plaintext = S::decrypt(input.as_ref(), self.decryptor())?;
         let res = plaintext
             .as_slice()
             .try_into()

@@ -10,7 +10,7 @@ anyhow = { workspace = true, features = ["backtrace"] }
 autonomi = { workspace = true }
 ant-bootstrap = "0.2.2"
 bech32 = { version = "0.11", features = ["alloc"] }
-bip39 = { version = "2.1", features = ["zeroize", "rand"] }
+bip39 = { workspace = true, features = ["zeroize", "rand"] }
 blsttc = "8.0.2"
 bon = "3.6"
 bytes = { workspace = true }

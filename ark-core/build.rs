@@ -20,6 +20,8 @@ fn main() -> anyhow::Result<()> {
     prost_config.extern_path(".manifest", "crate::manifest::protos");
     prost_config.compile_protos(&["protos/keyring.proto"], &[""])?;
     prost_config.extern_path(".keyring", "crate::crypto::keyring::protos");
+    prost_config.compile_protos(&["protos/announcement.proto"], &[""])?;
+    prost_config.extern_path(".announcement", "crate::announcement::protos");
     println!("cargo:rerun-if-changed=protos");
     println!("cargo:rerun-if-changed=build.rs");
 

@@ -1,8 +1,11 @@
-use crate::crypto::Bech32Secret;
 use crate::crypto::keys::{TypedPublicKey, TypedSecretKey};
+use crate::crypto::{Bech32Secret, EncryptedData, EncryptionScheme, TypedDecryptor};
 use crate::protos::{deserialize_with_header, serialize_with_header};
+use anyhow::anyhow;
+use blsttc::SecretKey;
 use bytes::Bytes;
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::hash::Hash;
 use zeroize::Zeroize;
 
@@ -28,6 +31,35 @@ impl<T> KeyRing<T> {
 impl<T> Zeroize for KeyRing<T> {
     fn zeroize(&mut self) {
         self.key_map.values_mut().for_each(|v| v.zeroize());
+    }
+}
+
+impl<T> TypedDecryptor<T> for KeyRing<T> {
+    type Decryptor = SecretKey;
+    fn decryptor(&self) -> &Self::Decryptor {
+        unimplemented!("decryptor should never be called on KeyRing")
+    }
+
+    fn decrypt<V: for<'a> TryFrom<&'a [u8]>, S: EncryptionScheme<Decryptor = Self::Decryptor>>(
+        &self,
+        input: &EncryptedData<T, V, S>,
+    ) -> anyhow::Result<V>
+    where
+        for<'a> <V as TryFrom<&'a [u8]>>::Error: Display,
+    {
+        let mut plaintext = self
+            .key_map
+            .values()
+            .map(|sk| S::decrypt(input.as_ref(), sk.as_ref()).ok())
+            .find_map(|r| r)
+            .ok_or(anyhow!("no matching key found in keyring"))?;
+
+        let res = plaintext
+            .as_slice()
+            .try_into()
+            .map_err(|e| anyhow!("error converting plaintext: {}", e));
+        plaintext.zeroize();
+        res
     }
 }
 

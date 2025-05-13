@@ -1,0 +1,8 @@
+[package]
+name = "ark-transport"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+iroh = { version = "0.35" }
+
