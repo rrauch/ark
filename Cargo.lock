@@ -1005,7 +1005,7 @@ checksum = "69f7f8c3906b62b754cd5326047894316021dcfe5a194c8ea52bdd94934a3457"
 
 [[package]]
 name = "ark-cli"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "ark-core",
@@ -1024,7 +1024,7 @@ dependencies = [
 
 [[package]]
 name = "ark-core"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "age",
  "age-core",
@@ -1056,7 +1056,7 @@ dependencies = [
 
 [[package]]
 name = "ark-engine"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "ark-core",
@@ -1193,7 +1193,7 @@ dependencies = [
 
 [[package]]
 name = "ark-transport"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "iroh",
 ]
