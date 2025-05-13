@@ -1,8 +1,52 @@
+use anyhow::anyhow;
+use std::fmt::{Display, Formatter};
+use std::str::FromStr;
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ObjectType {
     FileSystem(FileSystem),
     Email(Email),
     ObjectStorage(ObjectStorage),
+}
+
+impl FromStr for ObjectType {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim().to_lowercase();
+        if s.contains("posix") {
+            return Ok(ObjectType::FileSystem(FileSystem::Posix));
+        }
+        if s.contains("win") {
+            return Ok(ObjectType::FileSystem(FileSystem::Windows));
+        }
+        if s.contains("imap") {
+            return Ok(ObjectType::Email(Email::IMAP));
+        }
+        if s.contains("gmail") {
+            return Ok(ObjectType::Email(Email::GMAIL));
+        }
+        if s.contains("s3") {
+            return Ok(ObjectType::ObjectStorage(ObjectStorage::S3));
+        }
+        Err(anyhow!("unknown or unsupported object type [{}]", s))
+    }
+}
+
+impl Display for ObjectType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match &self {
+                Self::FileSystem(FileSystem::Posix) => "File System (Posix)",
+                Self::FileSystem(FileSystem::Windows) => "File System (Windows)",
+                Self::Email(Email::IMAP) => "Email (IMAP)",
+                Self::Email(Email::GMAIL) => "Email (Gmail)",
+                Self::ObjectStorage(ObjectStorage::S3) => "Object Storage (S3)",
+            }
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

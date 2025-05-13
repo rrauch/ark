@@ -1,6 +1,8 @@
+mod announcement;
 mod ark;
 mod ark_seed;
 mod autonomi_config;
+mod bridge_key;
 mod crypto;
 mod data_key;
 mod helm_key;
@@ -9,12 +11,12 @@ pub(crate) mod objects;
 mod progress;
 mod vault;
 mod worker_key;
-mod announcement;
 
-pub use ark::{ArkCreationDetails, ArkCreationSettings};
+pub use ark::{ArkAccessor, ArkCreationDetails, ArkCreationSettings};
 pub use ark_seed::{ArkAddress, ArkSeed};
 pub use autonomi::{Client as AutonomiClient, Wallet as EvmWallet};
 pub use autonomi_config::ClientConfig as AutonomiClientConfig;
+pub use bridge_key::{BridgeAddress, BridgeKey};
 pub use chrono::{DateTime, Utc};
 pub use data_key::{DataKey, SealKey};
 pub use helm_key::{HelmKey, PublicHelmKey};
@@ -22,6 +24,7 @@ pub use manifest::Manifest;
 pub use progress::{Progress, Report as ProgressReport, Status as ProgressStatus};
 pub use vault::{VaultConfig, VaultCreationSettings, VaultId};
 pub use worker_key::{EitherWorkerKey, PublicWorkerKey, RetiredWorkerKey, WorkerKey};
+pub use objects::ObjectType;
 
 use crate::crypto::{
     EncryptedData, EncryptedScratchpadContent, EncryptionScheme, PlaintextScratchpad, Retirable,
@@ -489,10 +492,8 @@ impl AsRef<str> for ConfidentialString {
 }
 
 mod protos {
-    use crate::ArkAddress;
-    use crate::crypto::{
-        Bech32Public, Bech32Secret, BridgeAddress, Retirable, TypedPublicKey, TypedSecretKey,
-    };
+    use crate::crypto::{Bech32Public, Bech32Secret, Retirable, TypedPublicKey, TypedSecretKey};
+    use crate::{ArkAddress, BridgeAddress};
     use anyhow::{Context, anyhow, bail};
     use bytes::{Buf, BufMut, Bytes, BytesMut};
     use chrono::{DateTime, Utc};

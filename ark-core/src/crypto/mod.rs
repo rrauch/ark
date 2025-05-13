@@ -107,14 +107,6 @@ macro_rules! decryptor {
     };
 }
 
-#[derive(Debug, Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct BridgeKind;
-pub type BridgeAddress = TypedPublicKey<BridgeKind>;
-
-impl Bech32Public for BridgeKind {
-    const HRP: &'static str = "arkbridgepub";
-}
-
 pub trait Bech32Secret {
     const HRP: &'static str;
 }

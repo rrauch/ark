@@ -10,8 +10,9 @@ use crate::helm_key::HelmKeyKind;
 use crate::protos::{deserialize_with_header, serialize_with_header};
 use crate::vault::{VaultConfig, VaultCreationSettings};
 use crate::{
-    ArkAddress, ArkSeed, Core, DataKey, HelmKey, PublicHelmKey, PublicWorkerKey, Receipt,
-    RetiredWorkerKey, SealKey, VaultId, WorkerKey, decryptor, encryptor, impl_decryptor_for,
+    ArkAccessor, ArkAddress, ArkSeed, Core, DataKey, HelmKey, PublicHelmKey, PublicWorkerKey,
+    Receipt, RetiredWorkerKey, SealKey, VaultId, WorkerKey, decryptor, encryptor,
+    impl_decryptor_for,
 };
 use anyhow::bail;
 use bytes::Bytes;
@@ -34,6 +35,16 @@ pub struct Manifest {
     pub authorized_worker: PublicWorkerKey,
     pub retired_workers: BTreeSet<RetiredWorkerKey>,
     pub vaults: Vec<VaultConfig>,
+}
+
+impl Manifest {
+    pub fn vault(&self, vault_id: VaultId) -> Option<&VaultConfig> {
+        self.vaults.iter().find(|v| v.id == vault_id)
+    }
+
+    pub fn vault_mut(&mut self, vault_id: VaultId) -> Option<&mut VaultConfig> {
+        self.vaults.iter_mut().find(|v| v.id == vault_id)
+    }
 }
 
 impl Retirable for Manifest {}
@@ -60,6 +71,14 @@ impl_decryptor_for!(HelmKey, Manifest);
 impl_decryptor_for!(WorkerKey, Manifest);
 impl_decryptor_for!(DataKey, Manifest);
 
+impl crate::crypto::TypedDecryptor<Manifest> for ArkAccessor {
+    type Decryptor = autonomi::SecretKey;
+
+    fn decryptor(&self) -> &Self::Decryptor {
+        self.secret_key()
+    }
+}
+
 pub type OwnedManifest = TypedOwnedScratchpad<HelmKeyKind, EncryptedManifest>;
 pub type ManifestAddress = TypedScratchpadAddress<HelmKeyKind, EncryptedManifest>;
 
@@ -72,7 +91,7 @@ impl From<VaultCreationSettings> for VaultConfig {
             name: value.name,
             description: value.description,
             active: value.active,
-            bridge: None,
+            bridge: value.bridge,
             object_type: value.object_type,
         }
     }

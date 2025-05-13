@@ -1,5 +1,5 @@
 use anyhow::bail;
-use ark_core::{ArkSeed, HelmKey, ProgressReport, ProgressStatus};
+use ark_core::{ArkAccessor, ArkSeed, DataKey, HelmKey, ProgressReport, ProgressStatus, WorkerKey};
 use colored::Colorize;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use once_cell::sync::Lazy;
@@ -304,4 +304,19 @@ pub async fn read_seed() -> anyhow::Result<ArkSeed> {
 pub async fn read_helm_key() -> anyhow::Result<HelmKey> {
     let input = tokio::task::spawn_blocking(|| rpassword::read_password()).await??;
     Ok(HelmKey::from_str(input.trim())?)
+}
+
+pub async fn read_ark_key() -> anyhow::Result<ArkAccessor> {
+    let input = tokio::task::spawn_blocking(|| rpassword::read_password()).await??;
+    let input = input.trim();
+    if let Ok(key) = HelmKey::from_str(input) {
+        return Ok(key.into());
+    }
+    if let Ok(key) = DataKey::from_str(input) {
+        return Ok(key.into());
+    }
+    if let Ok(key) = WorkerKey::from_str(input) {
+        return Ok(key.into());
+    }
+    bail!("no valid secret given");
 }

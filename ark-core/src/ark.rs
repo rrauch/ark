@@ -8,8 +8,51 @@ use crate::{
     PublicWorkerKey, Receipt, with_receipt,
 };
 use crate::{DataKey, HelmKey};
+use blsttc::SecretKey;
 use bon::Builder;
 use zeroize::{Zeroize, ZeroizeOnDrop};
+
+pub enum ArkAccessor {
+    ArkSeed(ArkSeed),
+    HelmKey(HelmKey),
+    DataKey(DataKey),
+    WorkerKey(WorkerKey),
+}
+
+impl ArkAccessor {
+    pub(crate) fn secret_key(&self) -> &SecretKey {
+        match &self {
+            Self::ArkSeed(k) => k.as_ref(),
+            Self::HelmKey(k) => k.as_ref(),
+            Self::DataKey(k) => k.as_ref(),
+            Self::WorkerKey(k) => k.as_ref(),
+        }
+    }
+}
+
+impl From<ArkSeed> for ArkAccessor {
+    fn from(value: ArkSeed) -> Self {
+        Self::ArkSeed(value)
+    }
+}
+
+impl From<HelmKey> for ArkAccessor {
+    fn from(value: HelmKey) -> Self {
+        Self::HelmKey(value)
+    }
+}
+
+impl From<DataKey> for ArkAccessor {
+    fn from(value: DataKey) -> Self {
+        Self::DataKey(value)
+    }
+}
+
+impl From<WorkerKey> for ArkAccessor {
+    fn from(value: WorkerKey) -> Self {
+        Self::WorkerKey(value)
+    }
+}
 
 async fn create(
     mut settings: ArkCreationSettings,
@@ -150,6 +193,23 @@ impl Core {
 
         let fut =
             with_receipt(async move |receipt| create(setting, client, wallet, receipt, task).await);
+
+        (progress, fut)
+    }
+
+    pub fn ark_details(
+        &self,
+        ark_accessor: &ArkAccessor,
+    ) -> (
+        Progress,
+        impl Future<Output = crate::Result<Manifest>> + Send,
+    ) {
+        let (progress, mut task) = Progress::new(1, "Retrieve Current Manifest".to_string());
+
+        let fut = with_receipt(async move |receipt| {
+            task.start();
+            self.get_manifest(ark_accessor).await
+        });
 
         (progress, fut)
     }

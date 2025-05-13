@@ -1,7 +1,10 @@
-use ark_cli::{ProgressView, ask_confirmation, press_enter_key, read_helm_key, read_seed};
+use ark_cli::{
+    ProgressView, ask_confirmation, press_enter_key, read_ark_key, read_helm_key, read_seed,
+};
 use ark_core::{
-    ArkAddress, ArkCreationSettings, ArkSeed, AutonomiClientConfig, ConfidentialString, Core,
-    EitherWorkerKey, HelmKey, PublicWorkerKey,
+    ArkAddress, ArkCreationSettings, ArkSeed, AutonomiClientConfig, BridgeAddress,
+    ConfidentialString, Core, EitherWorkerKey, HelmKey, ObjectType, PublicWorkerKey, VaultConfig,
+    VaultCreationSettings,
 };
 use autonomi::{Client, Wallet};
 use clap::{Parser, Subcommand};
@@ -35,9 +38,35 @@ enum Commands {
     /// Ark related actions
     #[command(subcommand)]
     Ark(ArkCommand),
+    /// Vault related actions
+    #[command(subcommand)]
+    Vault(VaultCommand),
     /// Key rotation and recovery
     #[command(subcommand)]
     Key(KeyCommand),
+}
+
+#[derive(Debug, Subcommand)]
+enum VaultCommand {
+    /// Create a new Vault
+    ///
+    /// Requires the Helm Key
+    Create {
+        /// Name of the new Vault
+        name: String,
+        /// Type of Objects to store
+        ///
+        /// This can NOT be changed later
+        object_type: ObjectType,
+        /// The Ark Address - e.g. arkaddr1XXXXXX...
+        ark_address: ArkAddress,
+        /// Description of the new Ark
+        #[arg(long, short = 'd')]
+        description: Option<String>,
+        /// Bridge Address
+        #[arg(long, short = 'b')]
+        bridge: Option<BridgeAddress>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -53,6 +82,20 @@ enum ArkCommand {
         #[arg(long, short = 'w')]
         worker: Option<PublicWorkerKey>,
     },
+    /// Show up-to-date details about a given Ark
+    #[command(subcommand)]
+    Show(ShowArkCommand),
+}
+
+#[derive(Debug, Subcommand)]
+enum ShowArkCommand {
+    /// Use an authorized key to access the Ark details.
+    WithKey {
+        /// The Ark Address - e.g. arkaddr1XXXXXX...
+        ark_address: ArkAddress,
+    },
+    /// Use an Ark Seed to access the Ark details.
+    WithSeed,
 }
 
 #[derive(Debug, Subcommand)]
@@ -142,12 +185,324 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?;
         }
+        Commands::Ark(ArkCommand::Show(show)) => {
+            show_ark(show, &client, &wallet, &arguments.autonomi_config).await?;
+        }
+        Commands::Vault(VaultCommand::Create {
+            name,
+            description,
+            bridge,
+            object_type,
+            ark_address,
+        }) => {
+            create_vault(
+                name,
+                description,
+                bridge,
+                object_type,
+                ark_address,
+                &client,
+                &wallet,
+                &arguments.autonomi_config,
+            )
+            .await?;
+        }
         Commands::Key(KeyCommand::Rotate(rotate)) => {
             rotate_key(rotate, &client, &wallet, &arguments.autonomi_config).await?;
         }
     }
 
     Ok(())
+}
+
+async fn create_vault(
+    name: String,
+    description: Option<String>,
+    bridge: Option<BridgeAddress>,
+    object_type: ObjectType,
+    ark_address: ArkAddress,
+    client: &Client,
+    wallet: &Wallet,
+    autonomi_config: &AutonomiClientConfig,
+) -> anyhow::Result<()> {
+    let settings = VaultCreationSettings::builder()
+        .name(name)
+        .maybe_description(description)
+        .maybe_bridge(bridge)
+        .object_type(object_type)
+        .build();
+
+    action_preview(
+        "Create New Vault",
+        Some(
+            format!(
+                r#"{} {}
+
+{} {}
+{}
+{}
+{} {}
+{} {}
+{} {} {}"#,
+                "Ark:".bold(),
+                ark_address,
+                "New Vault Name:".bold(),
+                settings.name(),
+                "Description".bold(),
+                settings.description().unwrap_or("<no description>"),
+                "Authorized Bridge:".bold(),
+                settings
+                    .authorized_bridge()
+                    .map(|k| k.to_string())
+                    .unwrap_or("<none>".to_string()),
+                "Active:".bold(),
+                settings.active(),
+                "Object Type:".bold(),
+                settings.object_type(),
+                "Warning: can NOT be changed later!".yellow()
+            )
+            .as_str(),
+        ),
+        Some(wallet),
+        autonomi_config,
+    );
+
+    if !ask_proceed().await {
+        println!(" ❌ {}", "Aborting".red());
+        println!();
+        return Ok(());
+    }
+
+    println!();
+    println!(" Provide the {} now ", "HELM KEY".bold());
+    println!();
+
+    let helm_key = read_helm_key().await?;
+
+    println!();
+    println!("✅ {}", "Provided secrets appear valid".green().bold());
+
+    let core = Core::builder()
+        .client(client.clone())
+        .wallet(wallet.clone())
+        .ark_address(ark_address.clone())
+        .build();
+
+    let (mut progress, fut) = core.create_vault(settings, &helm_key);
+    tokio::pin!(fut);
+
+    let mut progress_view = ProgressView::new(&progress.latest(), Duration::from_millis(100));
+    let (vault_config, receipt) = loop {
+        let next_tick_in = progress_view.next_tick_in();
+
+        tokio::select! {
+            res = &mut fut => {
+                break res.map_err(|(err, _)| err)?;
+            },
+            _ = &mut progress => {
+                progress_view.update(&progress.latest());
+            },
+            _ = tokio::time::sleep(next_tick_in) => {
+                progress_view.tick();
+            }
+        }
+    };
+
+    progress_view.clear();
+
+    const INDENT: &str = "    ";
+
+    println!();
+    println!("{} ✅", "Vault Creation Successful".green().bold());
+
+    println!();
+    display_vault_config(&vault_config, INDENT);
+    println!();
+
+    println!();
+    println!("{}", "TOTAL NETWORK COST:".cyan().bold());
+    println!("{}{}", INDENT, receipt.total_cost().to_string().italic());
+    println!();
+
+    println!("{}", "All Good!".green().bold());
+    println!();
+    Ok(())
+}
+
+async fn show_ark(
+    show: ShowArkCommand,
+    client: &Client,
+    wallet: &Wallet,
+    autonomi_config: &AutonomiClientConfig,
+) -> anyhow::Result<()> {
+    let (ark_address, ark_accessor) = match show {
+        ShowArkCommand::WithKey { ark_address } => {
+            action_preview(
+                "Display Ark Details",
+                Some("Provide the Secret Key now"),
+                None,
+                autonomi_config,
+            );
+            (ark_address, read_ark_key().await?)
+        }
+        ShowArkCommand::WithSeed => {
+            action_preview(
+                "Display Ark Details",
+                Some("Provide the Ark Seed now"),
+                None,
+                autonomi_config,
+            );
+            let ark_seed = read_seed().await?;
+            let ark_address = ark_seed.address().clone();
+            (ark_address, ark_seed.into())
+        }
+    };
+
+    const INDENT: &str = "    ";
+
+    println!();
+    println!("✅ {}", "Provided secrets appear valid".green().bold());
+
+    println!();
+    println!("{}", "DETAILS".cyan().bold());
+
+    println!("{}{}", INDENT, "ARK ADDRESS:".bold());
+    println!("{}{}", INDENT, ark_address);
+    println!();
+
+    let core = Core::builder()
+        .client(client.clone())
+        .wallet(wallet.clone())
+        .ark_address(ark_address.clone())
+        .build();
+
+    let (mut progress, fut) = core.ark_details(&ark_accessor);
+    tokio::pin!(fut);
+
+    let mut progress_view = ProgressView::new(&progress.latest(), Duration::from_millis(100));
+    let (manifest, _) = loop {
+        let next_tick_in = progress_view.next_tick_in();
+
+        tokio::select! {
+            res = &mut fut => {
+                break res.map_err(|(err, _)| err)?;
+            },
+            _ = &mut progress => {
+                progress_view.update(&progress.latest());
+            },
+            _ = tokio::time::sleep(next_tick_in) => {
+                progress_view.tick();
+            }
+        }
+    };
+
+    progress_view.clear();
+
+    println!();
+    println!("{}", "ARK DETAILS".cyan().bold());
+
+    println!("{}{}", INDENT, "ADDRESS:".bold());
+    println!("{}{}", INDENT, manifest.ark_address);
+    println!();
+
+    println!("{}{}", INDENT, "CREATED AT:".bold());
+    println!("{}{}", INDENT, manifest.created);
+    println!();
+
+    println!("{}{}", INDENT, "LAST MODIFIED AT:".bold());
+    println!("{}{}", INDENT, manifest.last_modified);
+    println!();
+
+    println!("{}{}", INDENT, "NAME:".bold());
+    println!("{}{}", INDENT, manifest.name);
+    println!();
+
+    if let Some(description) = &manifest.description {
+        println!("{}{}", INDENT, "DESCRIPTION:".bold());
+        println!("{}{}", INDENT, description);
+        println!();
+    }
+
+    println!(
+        "{}{}",
+        INDENT,
+        "CURRENT AUTHORIZED WORKER PUBLIC KEY:".bold()
+    );
+    println!("{}{}", INDENT, manifest.authorized_worker);
+    println!();
+
+    if !manifest.retired_workers.is_empty() {
+        println!(
+            "{}{}",
+            INDENT,
+            "PREVIOUS AUTHORIZED WORKER PUBLIC KEYS:".bold()
+        );
+
+        for k in &manifest.retired_workers {
+            println!("{}{}{} {}", INDENT, INDENT, k.retired_at(), k.as_ref());
+        }
+
+        println!();
+    }
+    println!();
+    println!("{}", "VAULTS".cyan().bold());
+
+    for vault in &manifest.vaults {
+        println!();
+        display_vault_config(vault, format!("{}{}", INDENT, INDENT).as_str());
+        println!("{}{}---", INDENT, INDENT);
+    }
+
+    println!();
+    Ok(())
+}
+
+fn display_vault_config(vault: &VaultConfig, indent: &str) {
+    println!("{}{}", indent, "VAULT ID:".bold());
+    println!("{}{}", indent, vault.id);
+    println!();
+
+    println!("{}{}", indent, "CREATED AT:".bold());
+    println!("{}{}", indent, vault.created);
+    println!();
+
+    println!("{}{}", indent, "LAST MODIFIED AT:".bold());
+    println!("{}{}", indent, vault.last_modified);
+    println!();
+
+    println!("{}{}", indent, "VAULT NAME:".bold());
+    println!("{}{}", indent, vault.name);
+    println!();
+
+    if let Some(description) = &vault.description {
+        println!("{}{}", indent, "DESCRIPTION:".bold());
+        println!("{}{}", indent, description);
+        println!();
+    }
+
+    println!("{}{}", indent, "ACTIVE:".bold());
+    let active = if vault.active {
+        format!("{}", "YES".green())
+    } else {
+        format!("{}", "NO".red())
+    };
+    println!("{}{}", indent, active);
+    println!();
+
+    println!("{}{}", indent, "AUTHORIZED BRIDGE:".bold());
+    println!(
+        "{}{}",
+        indent,
+        vault
+            .bridge
+            .as_ref()
+            .map(|b| b.to_string())
+            .unwrap_or("<none>".to_string())
+    );
+    println!();
+
+    println!("{}{}", indent, "OBJECT TYPE:".bold());
+    println!("{}{}", indent, vault.object_type);
 }
 
 async fn rotate_key(
@@ -171,7 +526,7 @@ async fn rotate_key(
     action_preview(
         format!("Rotate {}", key),
         Some(format!("Provide the required {} now", source).as_str()),
-        wallet,
+        Some(wallet),
         autonomi_config,
     );
 
@@ -450,7 +805,7 @@ async fn create_ark(
             )
             .as_str(),
         ),
-        wallet,
+        Some(wallet),
         autonomi_config,
     );
 
@@ -597,7 +952,7 @@ async fn create_ark(
 fn action_preview(
     action: impl AsRef<str>,
     details: Option<&str>,
-    wallet: &Wallet,
+    wallet: Option<&Wallet>,
     autonomi_config: &AutonomiClientConfig,
 ) {
     println!("{} {}", "ACTION:".bold(), action.as_ref().cyan().bold());
@@ -606,11 +961,13 @@ fn action_preview(
         "Autonomi Network:".bold(),
         autonomi_config.friendly()
     );
-    println!(
-        "{} {}",
-        "Wallet:".bold(),
-        wallet.address().to_string().red()
-    );
+    if let Some(wallet) = wallet {
+        println!(
+            "{} {}",
+            "Wallet:".bold(),
+            wallet.address().to_string().red()
+        );
+    }
     println!();
     if let Some(details) = details {
         println!("{}", details);
