@@ -17,15 +17,25 @@ architecture.**
 
 ## 🚧 Current Status: Prototype Only
 
-### It's Alive!
+### Not Slowing Down!
 
-v0.0.1 is out:
+v0.0.2 is out:
 
-> The very first public code for Ark is out - **v0.0.1**!
+> The next release of Ark is out - **v0.0.2**!
 >
-> This *Proof-of-Concept* comes with a CLI tool that lets you create an Ark from scratch and experiment with key rotation. Not much more in there yet from a user's point of view, but it demonstrates the core concept with its key structure and management.
-> 
-> Seriously, though: **experimental only!**
+> It’s still early days, but the foundation is getting stronger and the pieces are falling into place. There’s been a
+> lot of progress under the hood in just a week - the cryptographic components are improving and things are getting more
+> flexible.
+>
+> A couple of new user-facing things to play with:
+> * **Ark Details**:  The *CLI* now lets you see detailed information about an Ark using any of its authorized keys -
+    `Helm Key`, `Data Key`, `Worker Key` - or the `Ark Seed`
+> * **Vault Creation**: You can now create vaults directly from the *CLI*. This includes setting which bridge is
+    authorized and what type of object the vault will handle: *filesystem (POSIX/Windows)*, *email (IMAP/Gmail)*, or
+    *object storage (S3)*.
+>
+> Overall development is progressing really well! Soon, work will start on the `Ark Engine`. Once a basic version is
+> out, `Ark`s premise will start to become much clearer and more self-evident.
 
 **Warning: This is a Proof-of-Concept and is NOT ready for storing any data.**
 This code is unstable and represents an early exploration of the concepts.
@@ -37,10 +47,16 @@ with the Autonomi Network.
 
 ## Screenshots
 
+Creating a new Ark:
 ![Image](assets/poc/v0.0.1/screenshots/create2.png "creation of a new Ark")
+Creating a new Vault:
+![Image](assets/poc/v0.0.2/screenshots/create1.png "creation of a new Vault")
+Rotate Keys:
 ![Image](assets/poc/v0.0.1/screenshots/rotate3.png "key rotation")
+Accessing Ark Details using an authorized key:
+![Image](assets/poc/v0.0.2/screenshots/show1.png "Ark Details")
 
-[more Screenshots here](assets/poc/v0.0.1/screenshots/)
+more Screenshots: [v0.0.2](assets/poc/v0.0.2/screenshots/), [v0.0.1](assets/poc/v0.0.1/screenshots/)
 
 ---
 
@@ -115,6 +131,7 @@ This repository contains a Proof-of-Concept implementation including:
 * `ark-core`: Shared library with core logic.
 * `ark-cli`: Command-line interface tool.
 * `ark-engine`: The core daemon process.
+* `ark-transport`: Transport mechanisms for communication between `Ark Engine` & `Bridge`.
 * `bridge`: An example Bridge for local filesystems.
 
 ---
