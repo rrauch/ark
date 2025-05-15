@@ -11,13 +11,12 @@ use crate::protos::{deserialize_with_header, serialize_with_header};
 use crate::vault::{VaultConfig, VaultCreationSettings};
 use crate::{
     ArkAccessor, ArkAddress, ArkSeed, Core, DataKey, HelmKey, PublicHelmKey, PublicWorkerKey,
-    Receipt, RetiredWorkerKey, SealKey, VaultId, WorkerKey, decryptor, encryptor,
+    Receipt, RetiredWorkerKey, SealKey, VaultAddress, WorkerKey, decryptor, encryptor,
     impl_decryptor_for,
 };
 use anyhow::bail;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use uuid::Uuid;
 
 const MAGIC_NUMBER: &'static [u8; 16] = &[
     0x61, 0x72, 0x6B, 0x5F, 0x6D, 0x61, 0x6E, 0x69, 0x66, 0x65, 0x73, 0x74, 0x5F, 0x76, 0x30, 0x30,
@@ -38,12 +37,12 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    pub fn vault(&self, vault_id: VaultId) -> Option<&VaultConfig> {
-        self.vaults.iter().find(|v| v.id == vault_id)
+    pub fn vault(&self, vault_address: &VaultAddress) -> Option<&VaultConfig> {
+        self.vaults.iter().find(|v| &v.address == vault_address)
     }
 
-    pub fn vault_mut(&mut self, vault_id: VaultId) -> Option<&mut VaultConfig> {
-        self.vaults.iter_mut().find(|v| v.id == vault_id)
+    pub fn vault_mut(&mut self, vault_address: &VaultAddress) -> Option<&mut VaultConfig> {
+        self.vaults.iter_mut().find(|v| &v.address == vault_address)
     }
 }
 
@@ -85,7 +84,7 @@ pub type ManifestAddress = TypedScratchpadAddress<HelmKeyKind, EncryptedManifest
 impl From<VaultCreationSettings> for VaultConfig {
     fn from(value: VaultCreationSettings) -> Self {
         Self {
-            id: VaultId::new(Uuid::now_v7()),
+            address: value.vault_key.public_key().clone(),
             created: Utc::now(),
             last_modified: Utc::now(),
             name: value.name,
@@ -241,7 +240,6 @@ impl Core {
 }
 
 mod protos {
-    use crate::VaultId;
     use anyhow::anyhow;
     use std::collections::BTreeSet;
 
@@ -306,7 +304,7 @@ mod protos {
     impl From<super::VaultConfig> for Vault {
         fn from(value: super::VaultConfig) -> Self {
             Self {
-                id: Some(value.id.into_inner().into()),
+                address: Some(value.address.into()),
                 created: Some(value.created.into()),
                 last_modified: Some(value.last_modified.into()),
                 name: value.name,
@@ -323,7 +321,10 @@ mod protos {
 
         fn try_from(value: Vault) -> Result<Self, Self::Error> {
             Ok(Self {
-                id: VaultId::new(value.id.ok_or(anyhow!("id is missing"))?.try_into()?),
+                address: value
+                    .address
+                    .ok_or(anyhow!("address is misssing"))?
+                    .try_into()?,
                 created: value
                     .created
                     .ok_or(anyhow!("created is missing"))?

@@ -1,6 +1,7 @@
 use crate::crypto::keys::{TypedPublicKey, TypedSecretKey};
 use autonomi::pointer::PointerTarget;
-use autonomi::PointerAddress;
+use autonomi::{Pointer, PointerAddress};
+use blsttc::SecretKey;
 use std::marker::PhantomData;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -11,7 +12,7 @@ pub struct TypedPointerAddress<T, V> {
 }
 
 impl<T, V: Into<PointerTarget>> TypedPointerAddress<T, V> {
-    pub(super) fn new(inner: PointerAddress) -> Self {
+    pub(crate) fn new(inner: PointerAddress) -> Self {
         let owner = TypedPublicKey::from(inner.owner().clone());
         Self {
             inner,
@@ -38,7 +39,7 @@ pub struct TypedOwnedPointer<T, V> {
 }
 
 impl<T, V: Into<PointerTarget>> TypedOwnedPointer<T, V> {
-    pub(super) fn new(owner: TypedSecretKey<T>) -> Self {
+    pub(crate) fn new(owner: TypedSecretKey<T>) -> Self {
         let address =
             TypedPointerAddress::new(PointerAddress::new(owner.public_key().as_ref().clone()));
         Self { owner, address }
@@ -52,5 +53,20 @@ impl<T, V> TypedOwnedPointer<T, V> {
 
     pub fn address(&self) -> &TypedPointerAddress<T, V> {
         &self.address
+    }
+}
+
+pub(crate) trait PointerExt {
+    fn is_final(&self) -> bool;
+    fn new_final(owner: &SecretKey, target: PointerTarget) -> Self;
+}
+
+impl PointerExt for Pointer {
+    fn is_final(&self) -> bool {
+        self.counter() == u32::MAX
+    }
+
+    fn new_final(owner: &SecretKey, target: PointerTarget) -> Self {
+        Self::new(owner, u32::MAX, target)
     }
 }

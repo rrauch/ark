@@ -21,15 +21,16 @@ pub use chrono::{DateTime, Utc};
 pub use data_key::{DataKey, SealKey};
 pub use helm_key::{HelmKey, PublicHelmKey};
 pub use manifest::Manifest;
-pub use progress::{Progress, Report as ProgressReport, Status as ProgressStatus};
-pub use vault::{VaultConfig, VaultCreationSettings, VaultId};
-pub use worker_key::{EitherWorkerKey, PublicWorkerKey, RetiredWorkerKey, WorkerKey};
 pub use objects::ObjectType;
+pub use progress::{Progress, Report as ProgressReport, Status as ProgressStatus};
+pub use vault::{VaultAddress, VaultConfig, VaultCreationSettings};
+pub use worker_key::{EitherWorkerKey, PublicWorkerKey, RetiredWorkerKey, WorkerKey};
 
 use crate::crypto::{
-    EncryptedData, EncryptedScratchpadContent, EncryptionScheme, PlaintextScratchpad, Retirable,
-    ScratchpadContent, TypedChunk, TypedChunkAddress, TypedOwnedPointer, TypedOwnedRegister,
-    TypedOwnedScratchpad, TypedPointerAddress, TypedRegisterAddress, TypedScratchpadAddress,
+    EncryptedData, EncryptedScratchpadContent, EncryptionScheme, PlaintextScratchpad, PointerExt,
+    Retirable, ScratchpadContent, TypedChunk, TypedChunkAddress, TypedOwnedPointer,
+    TypedOwnedRegister, TypedOwnedScratchpad, TypedPointerAddress, TypedRegisterAddress,
+    TypedScratchpadAddress,
 };
 use anyhow::{anyhow, bail};
 use autonomi::client::payment::PaymentOption;
@@ -380,12 +381,10 @@ impl Core {
         &self,
         pointer: &TypedOwnedPointer<T, V>,
         value: V,
+        is_final: bool,
         receipt: &mut Receipt,
     ) -> anyhow::Result<()> {
-        let (attos, address) = self
-            .client
-            .pointer_create(pointer.owner().as_ref(), value.into(), self.payment())
-            .await?;
+        let (attos, address) = self._create_pointer(pointer, value, is_final).await?;
         self.pointer_cache.invalidate(&address).await;
         receipt.add(attos);
         if pointer.address().as_ref() != &address {
@@ -395,6 +394,30 @@ impl Core {
             bail!("incorrect pointer address returned");
         }
         Ok(())
+    }
+
+    async fn _create_pointer<T, V: Into<PointerTarget>>(
+        &self,
+        pointer: &TypedOwnedPointer<T, V>,
+        value: V,
+        is_final: bool,
+    ) -> anyhow::Result<(AttoTokens, PointerAddress)> {
+        let address = PointerAddress::new(*pointer.owner().public_key().as_ref());
+        let already_exists = self.client.pointer_check_existance(&address).await?;
+        if already_exists {
+            bail!("pointer already exists");
+        }
+
+        let pointer = if is_final {
+            PointerExt::new_final(pointer.owner().as_ref(), value.into())
+        } else {
+            Pointer::new(pointer.owner().as_ref(), 0, value.into())
+        };
+
+        self.client
+            .pointer_put(pointer, self.payment())
+            .await
+            .map_err(|e| e.into())
     }
 
     async fn update_pointer<T, V: Into<PointerTarget>>(
@@ -493,7 +516,6 @@ impl AsRef<str> for ConfidentialString {
 
 mod protos {
     use crate::crypto::{Bech32Public, Bech32Secret, Retirable, TypedPublicKey, TypedSecretKey};
-    use crate::{ArkAddress, BridgeAddress};
     use anyhow::{Context, anyhow, bail};
     use bytes::{Buf, BufMut, Bytes, BytesMut};
     use chrono::{DateTime, Utc};
@@ -503,35 +525,19 @@ mod protos {
 
     include!(concat!(env!("OUT_DIR"), "/protos/common.rs"));
 
-    impl From<ArkAddress> for Address {
-        fn from(value: ArkAddress) -> Self {
+    impl<T: Bech32Public> From<TypedPublicKey<T>> for Address {
+        fn from(value: TypedPublicKey<T>) -> Self {
             Self {
                 bech32: value.to_string(),
             }
         }
     }
 
-    impl TryFrom<Address> for ArkAddress {
+    impl<T: Bech32Public> TryFrom<Address> for TypedPublicKey<T> {
         type Error = anyhow::Error;
 
         fn try_from(value: Address) -> Result<Self, Self::Error> {
-            ArkAddress::from_str(value.bech32.as_str())
-        }
-    }
-
-    impl From<BridgeAddress> for Address {
-        fn from(value: BridgeAddress) -> Self {
-            Self {
-                bech32: value.to_string(),
-            }
-        }
-    }
-
-    impl TryFrom<Address> for BridgeAddress {
-        type Error = anyhow::Error;
-
-        fn try_from(value: Address) -> Result<Self, Self::Error> {
-            BridgeAddress::from_str(value.bech32.as_str())
+            Self::from_str(value.bech32.as_str())
         }
     }
 

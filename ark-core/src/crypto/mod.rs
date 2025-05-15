@@ -25,7 +25,7 @@ pub(crate) use chunk::{TypedChunk, TypedChunkAddress};
 pub(crate) use keys::{
     EitherKey, RetiredKey, TypedDerivationIndex, TypedPublicKey, TypedSecretKey,
 };
-pub(crate) use pointer::{TypedOwnedPointer, TypedPointerAddress};
+pub(crate) use pointer::{PointerExt, TypedOwnedPointer, TypedPointerAddress};
 pub(crate) use register::{TypedOwnedRegister, TypedRegisterAddress};
 pub(crate) use scratchpad::{
     Content as ScratchpadContent, EncryptedContent as EncryptedScratchpadContent,

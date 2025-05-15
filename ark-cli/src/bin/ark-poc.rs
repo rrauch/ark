@@ -3,8 +3,8 @@ use ark_cli::{
 };
 use ark_core::{
     ArkAddress, ArkCreationSettings, ArkSeed, AutonomiClientConfig, BridgeAddress,
-    ConfidentialString, Core, EitherWorkerKey, HelmKey, ObjectType, PublicWorkerKey, VaultConfig,
-    VaultCreationSettings,
+    ConfidentialString, Core, EitherWorkerKey, HelmKey, ObjectType, PublicWorkerKey, VaultAddress,
+    VaultConfig, VaultCreationSettings,
 };
 use autonomi::{Client, Wallet};
 use clap::{Parser, Subcommand};
@@ -66,6 +66,13 @@ enum VaultCommand {
         /// Bridge Address
         #[arg(long, short = 'b')]
         bridge: Option<BridgeAddress>,
+    },
+    /// Checks if a given Vault Address is valid
+    ///
+    /// Returns the corresponding Ark Address if it is
+    Check {
+        /// The Vault Address - e.g. arkvaultaddr1XXXXXX...
+        vault_address: VaultAddress,
     },
 }
 
@@ -207,11 +214,63 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?;
         }
+        Commands::Vault(VaultCommand::Check { vault_address }) => {
+            check_vault_address(vault_address, &client, &arguments.autonomi_config).await?;
+        }
         Commands::Key(KeyCommand::Rotate(rotate)) => {
             rotate_key(rotate, &client, &wallet, &arguments.autonomi_config).await?;
         }
     }
 
+    Ok(())
+}
+
+async fn check_vault_address(
+    vault_address: VaultAddress,
+    client: &Client,
+    autonomi_config: &AutonomiClientConfig,
+) -> anyhow::Result<()> {
+    action_preview(
+        "Check Vault Address",
+        Some(format!("Vault Address: {}", &vault_address).as_str()),
+        None,
+        autonomi_config,
+    );
+
+    let (mut progress, fut) = Core::ark_from_vault_address(client, &vault_address);
+    tokio::pin!(fut);
+
+    let mut progress_view = ProgressView::new(&progress.latest(), Duration::from_millis(100));
+    let res = loop {
+        let next_tick_in = progress_view.next_tick_in();
+
+        tokio::select! {
+            res = &mut fut => {
+                break res?;
+            },
+            _ = &mut progress => {
+                progress_view.update(&progress.latest());
+            },
+            _ = tokio::time::sleep(next_tick_in) => {
+                progress_view.tick();
+            }
+        }
+    };
+
+    progress_view.clear();
+
+    println!();
+
+    if let Some(ark_address) = res {
+        println!("{} ✅", "Vault Address is valid!".green().bold());
+        println!();
+        println!("    {}", "ARK ADDRESS:".bold());
+        println!("    {}", ark_address);
+        println!();
+    } else {
+        println!(" ❌ {}", "Not a valid Vault Address".red());
+        println!();
+    }
     Ok(())
 }
 
@@ -458,8 +517,8 @@ async fn show_ark(
 }
 
 fn display_vault_config(vault: &VaultConfig, indent: &str) {
-    println!("{}{}", indent, "VAULT ID:".bold());
-    println!("{}{}", indent, vault.id);
+    println!("{}{}", indent, "VAULT ADDRESS:".bold());
+    println!("{}{}", indent, vault.address);
     println!();
 
     println!("{}{}", indent, "CREATED AT:".bold());

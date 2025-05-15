@@ -16,7 +16,7 @@ message Manifest {
 }
 
 message Vault {
-  common.Uuid id = 1;
+  common.Address address = 1;
   common.Timestamp created = 2;
   common.Timestamp last_modified = 3;
   string name = 4;

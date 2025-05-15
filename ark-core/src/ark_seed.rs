@@ -9,7 +9,8 @@ use crate::{
 
 use crate::{Core, Progress, crypto, with_receipt};
 use anyhow::bail;
-use autonomi::Client;
+use autonomi::pointer::PointerTarget;
+use autonomi::{Client, PointerAddress};
 use bip39::Mnemonic;
 use blsttc::SecretKey;
 use zeroize::Zeroize;
@@ -68,7 +69,7 @@ impl ArkSeed {
     }
 
     pub fn helm_register(&self) -> HelmRegister {
-        let owner = crate::crypto::TypedSecretKey::new(Client::register_key_from_name(
+        let owner = crypto::TypedSecretKey::new(Client::register_key_from_name(
             self.as_ref(),
             HELM_REGISTER_NAME,
         ));
@@ -138,6 +139,12 @@ impl ArkAddress {
     }
 }
 
+impl From<ArkAddress> for PointerTarget {
+    fn from(value: ArkAddress) -> Self {
+        PointerTarget::PointerAddress(PointerAddress::new(value.as_ref().clone()))
+    }
+}
+
 impl Core {
     pub(super) fn verify_ark_seed(&self, ark_seed: &ArkSeed) -> anyhow::Result<()> {
         if &self.ark_address != ark_seed.address() {
@@ -179,7 +186,7 @@ impl Core {
                 let data_key = self
                     ._rotate_data_key(ark_seed, receipt, data_key_task)
                     .await?;
-                
+
                 task.complete();
                 Ok((data_key, helm_key, new_worker_key))
             }),

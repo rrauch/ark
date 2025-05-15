@@ -1,5 +1,6 @@
 use crate::crypto::{AllowRandom, Bech32Public, Bech32Secret};
 use anyhow::bail;
+use autonomi::XorName;
 use autonomi::client::key_derivation::DerivationIndex;
 use bech32::{Bech32m, EncodeError, Hrp};
 use blsttc::{PublicKey, SecretKey};
@@ -264,5 +265,9 @@ impl<T> TypedDerivationIndex<T> {
     pub fn random() -> Self {
         let seed: [u8; 32] = rand::random();
         Self::from(seed)
+    }
+
+    pub(crate) fn from_name(name: impl AsRef<str>) -> Self {
+        Self::from(XorName::from_content(name.as_ref().as_bytes()).0)
     }
 }
