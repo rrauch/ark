@@ -13,7 +13,7 @@ pub(crate) use crate::crypto::keyring::KeyRing;
 use anyhow::anyhow;
 use autonomi::client::key_derivation::{DerivationIndex, MainSecretKey};
 use autonomi::register::RegisterAddress;
-use autonomi::{PointerAddress, PublicKey, ScratchpadAddress, SecretKey, XorName};
+use autonomi::{PublicKey, ScratchpadAddress, SecretKey, XorName};
 use sn_bls_ckd::derive_master_sk;
 use sn_curv::elliptic::curves::ECScalar;
 
@@ -25,7 +25,7 @@ pub(crate) use chunk::{TypedChunk, TypedChunkAddress};
 pub(crate) use keys::{
     EitherKey, RetiredKey, TypedDerivationIndex, TypedPublicKey, TypedSecretKey,
 };
-pub(crate) use pointer::{PointerExt, TypedOwnedPointer, TypedPointer, TypedPointerAddress};
+pub(crate) use pointer::{TypedOwnedPointer, TypedPointerAddress};
 pub(crate) use register::{TypedOwnedRegister, TypedRegisterAddress};
 pub(crate) use scratchpad::{
     Content as ScratchpadContent, EncryptedContent as EncryptedScratchpadContent,
@@ -142,12 +142,6 @@ pub(crate) fn register_address_from_name(
     let derivation_index =
         DerivationIndex::from_bytes(XorName::from_content(name.as_ref().as_bytes()).0);
     RegisterAddress::new(owner.derive_child(derivation_index.as_bytes().as_slice()))
-}
-
-fn pointer_address_from_name(owner: &PublicKey, name: impl AsRef<str>) -> PointerAddress {
-    let derivation_index =
-        DerivationIndex::from_bytes(XorName::from_content(name.as_ref().as_bytes()).0);
-    PointerAddress::new(owner.derive_child(derivation_index.as_bytes().as_slice()))
 }
 
 pub(crate) fn scratchpad_address_from_name(
