@@ -25,7 +25,7 @@ pub(crate) use chunk::{TypedChunk, TypedChunkAddress};
 pub(crate) use keys::{
     EitherKey, RetiredKey, TypedDerivationIndex, TypedPublicKey, TypedSecretKey,
 };
-pub(crate) use pointer::{PointerExt, TypedOwnedPointer, TypedPointerAddress};
+pub(crate) use pointer::{PointerExt, TypedOwnedPointer, TypedPointer, TypedPointerAddress};
 pub(crate) use register::{TypedOwnedRegister, TypedRegisterAddress};
 pub(crate) use scratchpad::{
     Content as ScratchpadContent, EncryptedContent as EncryptedScratchpadContent,
@@ -117,6 +117,7 @@ pub trait Bech32Public {
 
 pub trait Retirable {}
 pub trait AllowRandom {}
+pub trait Finalizeable {}
 
 pub(crate) fn eip2333(seed: impl AsRef<[u8]>) -> anyhow::Result<[u8; 32]> {
     // Derive BLS12-381 master secret key from seed using EIP-2333 standard.

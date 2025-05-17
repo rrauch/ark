@@ -1,7 +1,6 @@
-use crate::crypto::PointerExt;
 use crate::crypto::{
-    AllowRandom, Bech32Public, TypedDerivationIndex, TypedOwnedPointer, TypedPointerAddress,
-    TypedPublicKey, TypedSecretKey,
+    AllowRandom, Bech32Public, Finalizeable, TypedDerivationIndex, TypedOwnedPointer,
+    TypedPointerAddress, TypedPublicKey, TypedSecretKey,
 };
 use crate::objects::ObjectType;
 use crate::progress::Task;
@@ -9,7 +8,6 @@ use crate::{ArkAddress, AutonomiClient, BridgeAddress, HelmKey, Progress};
 use crate::{Core, Receipt, Result, with_receipt};
 use anyhow::{anyhow, bail};
 use autonomi::PointerAddress;
-use autonomi::pointer::PointerTarget;
 use bon::Builder;
 use chrono::{DateTime, Utc};
 
@@ -26,14 +24,15 @@ impl Bech32Public for VaultKind {
 
 pub(crate) type VaultKey = TypedSecretKey<VaultKind>;
 impl AllowRandom for VaultKind {}
+impl Finalizeable for ArkAddress {}
 
 type ArkPointerDerivationIndex = TypedDerivationIndex<VaultKind>;
-type ArkPointer = TypedPointerAddress<VaultKind, ArkAddress>;
+type ArkPointerAddress = TypedPointerAddress<VaultKind, ArkAddress>;
 
-impl ArkPointer {
-    fn from_vault_address(vault_address: &VaultAddress) -> Self {
+impl From<VaultAddress> for ArkPointerAddress {
+    fn from(value: VaultAddress) -> Self {
         Self::new(PointerAddress::new(
-            vault_address
+            value
                 .derive_child(&ArkPointerDerivationIndex::from_name(ARK_POINTER_NAME))
                 .into(),
         ))
@@ -43,8 +42,11 @@ impl ArkPointer {
 type OwnedArkPointer = TypedOwnedPointer<VaultKind, ArkAddress>;
 
 impl OwnedArkPointer {
-    fn from_vault_key(vault_key: &VaultKey) -> Self {
-        Self::new(vault_key.derive_child(&ArkPointerDerivationIndex::from_name(ARK_POINTER_NAME)))
+    fn from_vault_key(vault_key: &VaultKey, ark_address: &ArkAddress) -> Self {
+        Self::new(
+            ark_address.clone(),
+            vault_key.derive_child(&ArkPointerDerivationIndex::from_name(ARK_POINTER_NAME)),
+        )
     }
 }
 
@@ -66,10 +68,9 @@ async fn create(
     verify_helm.complete();
 
     vault_pointer.start();
-    core.create_pointer(
-        &OwnedArkPointer::from_vault_key(&settings.vault_key),
-        core.ark_address.clone(),
-        true,
+
+    core.create_immutable_pointer(
+        OwnedArkPointer::from_vault_key(&settings.vault_key, &core.ark_address),
         receipt,
     )
     .await?;
@@ -165,35 +166,27 @@ impl Core {
     ) {
         let (progress, task) = Progress::new(1, "Check Vault Address".to_string());
 
-        let fut = Self::_ark_from_vault_address(client, vault_address, task);
+        let fut = Self::_ark_from_source(client, vault_address.clone(), task);
 
         (progress, fut)
     }
 
-    async fn _ark_from_vault_address(
+    async fn _ark_from_source<S: Into<ArkPointerAddress>>(
         client: &AutonomiClient,
-        vault_address: &VaultAddress,
+        source: S,
         mut task: Task,
     ) -> anyhow::Result<Option<ArkAddress>> {
         task.start();
-        let ark_pointer = ArkPointer::from_vault_address(vault_address);
-        if !client.pointer_check_existance(ark_pointer.as_ref()).await? {
-            return Ok(None);
-        }
-
-        let pointer = client.pointer_get(ark_pointer.as_ref()).await?;
-        if !pointer.is_final() {
-            bail!("pointer needs to be final to be trusted");
-        }
-
-        let ark_address = match pointer.target() {
-            PointerTarget::PointerAddress(addr) => ArkAddress::from(addr.owner().clone()),
-            _ => bail!("expected address pointer"),
+        let pointer = match Self::read_pointer_directly(client, &(source.into())).await? {
+            Some(p) => p,
+            None => return Ok(None),
         };
 
-        //todo: additional checks might be a good idea here
-        task.complete();
-        Ok(Some(ark_address))
+        if pointer.is_mutable() {
+            bail!("pointer needs to be immutable to be trusted");
+        }
+
+        Ok(Some(pointer.into_target()))
     }
 
     pub fn create_vault(
@@ -292,7 +285,7 @@ impl Core {
         read_manifest.start();
         let mut manifest = self.get_manifest(helm_key).await?;
         read_manifest.complete();
-        let mut vault_config = manifest
+        let vault_config = manifest
             .vault_mut(vault_address)
             .ok_or(anyhow!("vault not found"))?;
         vault_config.apply(modification_request);

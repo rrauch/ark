@@ -27,10 +27,10 @@ pub use vault::{VaultAddress, VaultConfig, VaultCreationSettings};
 pub use worker_key::{EitherWorkerKey, PublicWorkerKey, RetiredWorkerKey, WorkerKey};
 
 use crate::crypto::{
-    EncryptedData, EncryptedScratchpadContent, EncryptionScheme, PlaintextScratchpad, PointerExt,
-    Retirable, ScratchpadContent, TypedChunk, TypedChunkAddress, TypedOwnedPointer,
-    TypedOwnedRegister, TypedOwnedScratchpad, TypedPointerAddress, TypedRegisterAddress,
-    TypedScratchpadAddress,
+    EncryptedData, EncryptedScratchpadContent, EncryptionScheme, Finalizeable, PlaintextScratchpad,
+    PointerExt, Retirable, ScratchpadContent, TypedChunk, TypedChunkAddress, TypedOwnedPointer,
+    TypedOwnedRegister, TypedOwnedScratchpad, TypedPointer, TypedPointerAddress,
+    TypedRegisterAddress, TypedScratchpadAddress,
 };
 use anyhow::{anyhow, bail};
 use autonomi::client::payment::PaymentOption;
@@ -112,7 +112,7 @@ pub struct Core {
     ark_address: ArkAddress,
     register_cache: Cache<RegisterAddress, RegisterValue>,
     register_history_cache: Cache<RegisterAddress, Vec<RegisterValue>>,
-    pointer_cache: Cache<PointerAddress, Pointer>,
+    pointer_cache: Cache<PointerAddress, Option<Pointer>>,
     scratchpad_cache: Cache<ScratchpadAddress, Scratchpad>,
 }
 
@@ -379,82 +379,128 @@ impl Core {
 
     async fn create_pointer<T, V: Into<PointerTarget>>(
         &self,
-        pointer: &TypedOwnedPointer<T, V>,
-        value: V,
-        is_final: bool,
+        pointer: TypedOwnedPointer<T, V>,
         receipt: &mut Receipt,
-    ) -> anyhow::Result<()> {
-        let (attos, address) = self._create_pointer(pointer, value, is_final).await?;
-        self.pointer_cache.invalidate(&address).await;
-        receipt.add(attos);
-        if pointer.address().as_ref() != &address {
-            self.pointer_cache
-                .invalidate(pointer.address().as_ref())
-                .await;
-            bail!("incorrect pointer address returned");
-        }
-        Ok(())
+    ) -> anyhow::Result<TypedPointerAddress<T, V>> {
+        self._create_pointer(pointer.into_pointer(), receipt).await
+    }
+
+    async fn create_immutable_pointer<T, V: Into<PointerTarget> + Finalizeable>(
+        &self,
+        pointer: TypedOwnedPointer<T, V>,
+        receipt: &mut Receipt,
+    ) -> anyhow::Result<TypedPointerAddress<T, V>> {
+        self._create_pointer(pointer.make_immutable()?, receipt)
+            .await
     }
 
     async fn _create_pointer<T, V: Into<PointerTarget>>(
         &self,
-        pointer: &TypedOwnedPointer<T, V>,
-        value: V,
-        is_final: bool,
-    ) -> anyhow::Result<(AttoTokens, PointerAddress)> {
-        let address = PointerAddress::new(*pointer.owner().public_key().as_ref());
-        let already_exists = self.client.pointer_check_existance(&address).await?;
-        if already_exists {
+        pointer: Pointer,
+        receipt: &mut Receipt,
+    ) -> anyhow::Result<TypedPointerAddress<T, V>> {
+        let address = PointerAddress::new(*pointer.owner());
+        if let Some(_) = self._pointer_get(&address).await? {
             bail!("pointer already exists");
         }
 
-        let pointer = if is_final {
-            PointerExt::new_final(pointer.owner().as_ref(), value.into())
-        } else {
-            Pointer::new(pointer.owner().as_ref(), 0, value.into())
-        };
-
-        self.client
+        let res = self
+            .client
             .pointer_put(pointer, self.payment())
             .await
-            .map_err(|e| e.into())
+            .map_err(|e| anyhow::Error::from(e));
+
+        self.pointer_cache.invalidate(&address).await;
+
+        let (attos, addr) = res?;
+
+        receipt.add(attos);
+        if &address != &addr {
+            self.pointer_cache.invalidate(&addr).await;
+            bail!("incorrect pointer address returned");
+        };
+
+        Ok(TypedPointerAddress::new(address))
     }
 
     async fn update_pointer<T, V: Into<PointerTarget>>(
         &self,
-        pointer: &TypedOwnedPointer<T, V>,
-        value: V,
-    ) -> anyhow::Result<()> {
-        let res = self
-            .client
-            .pointer_update(pointer.owner().as_ref(), value.into())
-            .await;
-        self.pointer_cache
-            .invalidate(pointer.address().as_ref())
-            .await;
-        res.map_err(|e| e.into())
+        pointer: TypedOwnedPointer<T, V>,
+        receipt: &mut Receipt,
+    ) -> anyhow::Result<u32> {
+        let existing = self
+            ._pointer_get(pointer.address().as_ref())
+            .await?
+            .ok_or(anyhow!("pointer does not exist"))?;
+        if !existing.is_mutable() {
+            bail!("pointer is immutable");
+        }
+
+        let pointer = pointer.into_pointer();
+
+        if existing.counter() > pointer.counter() {
+            bail!("existing pointer has higher version number");
+        }
+
+        if existing.target() == pointer.target() && existing.counter() == pointer.counter() {
+            // nothing has changed
+            // no need to send to the network
+            return Ok(existing.counter());
+        }
+
+        let address = pointer.address();
+        let counter = pointer.counter();
+
+        let res = self.client.pointer_put(pointer, self.payment()).await;
+        self.pointer_cache.invalidate(&address).await;
+        let (attos, _) = res.map_err(|e| anyhow!("{}", e))?;
+        receipt.add(attos);
+
+        Ok(counter)
     }
 
-    async fn read_chunk_pointer<T, V: TryFrom<Bytes>>(
+    async fn read_pointer<T, V: TryFrom<PointerTarget> + Into<PointerTarget>>(
         &self,
-        address: &TypedPointerAddress<T, TypedChunk<V>>,
-    ) -> anyhow::Result<V>
+        address: &TypedPointerAddress<T, V>,
+    ) -> anyhow::Result<Option<TypedPointer<T, V>>>
     where
-        <V as TryFrom<Bytes>>::Error: Display,
+        <V as TryFrom<PointerTarget>>::Error: Send + Sync + Display,
     {
-        let address = match self._pointer_get(address.as_ref()).await?.target() {
-            PointerTarget::ChunkAddress(address) => address.clone(),
-            _ => bail!("pointer does not point to chunk"),
-        };
-        let address = TypedChunkAddress::new(address);
-        self.get_chunk(&address).await
+        Ok(self
+            ._pointer_get(address.as_ref())
+            .await?
+            .map(|p| TypedPointer::try_from_pointer(p))
+            .transpose()?)
     }
 
-    async fn _pointer_get(&self, address: &PointerAddress) -> anyhow::Result<Pointer> {
+    async fn _pointer_get(&self, address: &PointerAddress) -> anyhow::Result<Option<Pointer>> {
         self.pointer_cache
-            .try_get_with_by_ref(address, self.client.pointer_get(address))
+            .try_get_with_by_ref(address, Self::_pointer_get_live(&self.client, address))
             .await
-            .map_err(|e| e.into())
+            .map_err(|e| anyhow!("{}", e))
+    }
+
+    async fn _pointer_get_live(
+        client: &AutonomiClient,
+        address: &PointerAddress,
+    ) -> anyhow::Result<Option<Pointer>> {
+        if !client.pointer_check_existance(address).await? {
+            return Ok(None);
+        }
+        Ok(Some(client.pointer_get(address).await?))
+    }
+
+    async fn read_pointer_directly<T, V: TryFrom<PointerTarget> + Into<PointerTarget>>(
+        client: &AutonomiClient,
+        address: &TypedPointerAddress<T, V>,
+    ) -> anyhow::Result<Option<TypedPointer<T, V>>>
+    where
+        <V as TryFrom<PointerTarget>>::Error: Send + Sync + Display,
+    {
+        Ok(Self::_pointer_get_live(client, address.as_ref())
+            .await?
+            .map(|p| TypedPointer::try_from_pointer(p))
+            .transpose()?)
     }
 
     fn payment(&self) -> PaymentOption {

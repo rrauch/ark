@@ -1,6 +1,6 @@
-use crate::crypto::Retirable;
 use crate::crypto::encrypt::{DefaultEncryptionScheme, EncryptedData, EncryptionScheme};
 use crate::crypto::keys::{TypedPublicKey, TypedSecretKey};
+use crate::crypto::{Finalizeable, Retirable};
 use anyhow::{anyhow, bail};
 use autonomi::{Client, Scratchpad, ScratchpadAddress};
 use bytes::Bytes;
@@ -176,6 +176,25 @@ impl<T, V> PlaintextScratchpad<T, V> {
 
         Ok(pad)
     }
+
+    pub fn is_mutable(&self) -> bool {
+        self.counter < EOL_COUNTER
+    }
+}
+
+impl<T, V: Finalizeable> PlaintextScratchpad<T, V> {
+    pub fn make_immutable(
+        mut self,
+        owner: &TypedOwnedScratchpad<T, V>,
+    ) -> anyhow::Result<Scratchpad> {
+        if !self.is_mutable() {
+            bail!("scratchpad is already immutable");
+        }
+
+        self.counter = EOL_COUNTER;
+
+        self.try_into_scratchpad(owner)
+    }
 }
 
 impl<T, V: Retirable> PlaintextScratchpad<T, V> {
@@ -184,8 +203,8 @@ impl<T, V: Retirable> PlaintextScratchpad<T, V> {
             bail!("scratchpad already retired");
         }
 
-        if self.counter >= EOL_COUNTER {
-            bail!("scratchpad counter already >= [{}]", EOL_COUNTER);
+        if !self.is_mutable() {
+            bail!("scratchpad is immutable");
         }
 
         self.data_encoding = EOL_ENCODING;
@@ -204,6 +223,16 @@ impl<T, V: Retirable> PlaintextScratchpad<T, V> {
 
 fn is_retired(pad: &Scratchpad) -> bool {
     pad.data_encoding() == EOL_ENCODING
-        && pad.counter() == EOL_COUNTER
+        && !pad.is_mutable()
         && pad.encrypted_data() == TOMBSTONE_VALUE.deref()
+}
+
+pub(crate) trait ScratchpadExt {
+    fn is_mutable(&self) -> bool;
+}
+
+impl ScratchpadExt for Scratchpad {
+    fn is_mutable(&self) -> bool {
+        self.counter() < EOL_COUNTER
+    }
 }
