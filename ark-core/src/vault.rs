@@ -1,6 +1,6 @@
 use crate::crypto::{
-    AllowRandom, Bech32Public, Finalizeable, TypedDerivationIndex, TypedOwnedPointer,
-    TypedPointerAddress, TypedPublicKey, TypedSecretKey,
+    AllowDerivation, AllowRandom, Bech32Public, Derived, Finalizeable, TypedDerivationIndex,
+    TypedOwnedPointer, TypedPointerAddress, TypedPublicKey, TypedSecretKey,
 };
 use crate::objects::ObjectType;
 use crate::progress::Task;
@@ -10,11 +10,21 @@ use anyhow::{anyhow, bail};
 use autonomi::PointerAddress;
 use bon::Builder;
 use chrono::{DateTime, Utc};
+use once_cell::sync::Lazy;
+use std::ops::Deref;
 
 const ARK_POINTER_NAME: &str = "/ark/v0/vault/ark/pointer";
+static ARK_POINTER_DERIVATOR: Lazy<ArkPointerDerivator> =
+    Lazy::new(|| ArkPointerDerivator::from_name(ARK_POINTER_NAME));
+
+type ArkPointerDerivator = TypedDerivationIndex<ArkAddress>;
 
 #[derive(Debug, Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct VaultKind;
+
+impl AllowDerivation<VaultKind, ArkAddress> for VaultKind {
+    type Derivator = ArkPointerDerivator;
+}
 
 pub type VaultAddress = TypedPublicKey<VaultKind>;
 
@@ -26,26 +36,25 @@ pub(crate) type VaultKey = TypedSecretKey<VaultKind>;
 impl AllowRandom for VaultKind {}
 impl Finalizeable for ArkAddress {}
 
-type ArkPointerDerivationIndex = TypedDerivationIndex<VaultKind>;
-type ArkPointerAddress = TypedPointerAddress<VaultKind, ArkAddress>;
+type ArkPointerKind = Derived<ArkAddress, VaultKind>;
+
+type ArkPointerAddress = TypedPointerAddress<ArkPointerKind, ArkAddress>;
 
 impl From<VaultAddress> for ArkPointerAddress {
     fn from(value: VaultAddress) -> Self {
         Self::new(PointerAddress::new(
-            value
-                .derive_child(&ArkPointerDerivationIndex::from_name(ARK_POINTER_NAME))
-                .into(),
+            value.derive_child(ARK_POINTER_DERIVATOR.deref()).into(),
         ))
     }
 }
 
-type OwnedArkPointer = TypedOwnedPointer<VaultKind, ArkAddress>;
+type OwnedArkPointer = TypedOwnedPointer<ArkPointerKind, ArkAddress>;
 
 impl OwnedArkPointer {
     fn from_vault_key(vault_key: &VaultKey, ark_address: &ArkAddress) -> Self {
         Self::new(
             ark_address.clone(),
-            vault_key.derive_child(&ArkPointerDerivationIndex::from_name(ARK_POINTER_NAME)),
+            vault_key.derive_child(ARK_POINTER_DERIVATOR.deref()),
         )
     }
 }

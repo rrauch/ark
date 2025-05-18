@@ -26,11 +26,7 @@ pub use progress::{Progress, Report as ProgressReport, Status as ProgressStatus}
 pub use vault::{VaultAddress, VaultConfig, VaultCreationSettings};
 pub use worker_key::{EitherWorkerKey, PublicWorkerKey, RetiredWorkerKey, WorkerKey};
 
-use crate::crypto::{
-    EncryptedData, EncryptedScratchpadContent, EncryptionScheme, PlaintextScratchpad, Retirable,
-    ScratchpadContent, TypedChunk, TypedChunkAddress, TypedOwnedRegister, TypedOwnedScratchpad,
-    TypedRegisterAddress, TypedScratchpadAddress,
-};
+use crate::crypto::{TypedChunk, TypedChunkAddress, TypedOwnedRegister, TypedRegisterAddress};
 use anyhow::{anyhow, bail};
 use autonomi::client::payment::PaymentOption;
 use autonomi::register::{RegisterAddress, RegisterValue};
@@ -111,7 +107,7 @@ pub struct Core {
     register_cache: Cache<RegisterAddress, RegisterValue>,
     register_history_cache: Cache<RegisterAddress, Vec<RegisterValue>>,
     pointer_cache: Cache<PointerAddress, Option<Pointer>>,
-    scratchpad_cache: Cache<ScratchpadAddress, Scratchpad>,
+    scratchpad_cache: Cache<ScratchpadAddress, Option<Scratchpad>>,
 }
 
 #[bon]
@@ -155,116 +151,11 @@ impl Core {
                 .time_to_live(cache_ttl)
                 .time_to_idle(cache_tti)
                 .max_capacity(scratchpad_cache_capacity)
-                .weigher(|_, pad: &Scratchpad| pad.size() as u32)
+                .weigher(|_, pad: &Option<Scratchpad>| {
+                    pad.as_ref().map(|p| p.size() as u32).unwrap_or(1)
+                })
                 .build(),
         }
-    }
-
-    /// Creates a new **ENCRYPTED** scratchpad owned by the given owner yet readable by `R`.
-    async fn create_encrypted_scratchpad<
-        O: Clone + PartialEq,
-        R,
-        V: ScratchpadContent,
-        S: EncryptionScheme,
-    >(
-        &self,
-        encrypted_content: EncryptedScratchpadContent<R, V, S>,
-        owner: &TypedOwnedScratchpad<O, EncryptedData<R, V, S>>,
-        receipt: &mut Receipt,
-    ) -> anyhow::Result<()> {
-        self.create_scratchpad(encrypted_content, owner, receipt)
-            .await
-    }
-
-    /// Creates a new **PLAINTEXT** scratchpad owned by the given owner.
-    async fn create_scratchpad<T: Clone + PartialEq, V: ScratchpadContent>(
-        &self,
-        content: V,
-        owner: &TypedOwnedScratchpad<T, V>,
-        receipt: &mut Receipt,
-    ) -> anyhow::Result<()> {
-        let pad = PlaintextScratchpad::new_from_value(content, owner.owner().public_key().clone())
-            .try_into_scratchpad(owner)?;
-        if self.scratchpad_cache.contains_key(pad.address())
-            || self
-                .client
-                .scratchpad_check_existance(pad.address())
-                .await?
-        {
-            bail!("scratchpad already exists");
-        }
-        let address = pad.address().clone();
-        let res = self.client.scratchpad_put(pad, self.payment()).await;
-        self.scratchpad_cache.invalidate(&address).await;
-        let (attos, address) = res?;
-        receipt.add(attos);
-
-        if &address != owner.address().as_ref() {
-            self.scratchpad_cache.invalidate(&address).await;
-            bail!("incorrect scratchpad address returned");
-        }
-        Ok(())
-    }
-
-    async fn read_scratchpad<T, V: ScratchpadContent>(
-        &self,
-        address: &TypedScratchpadAddress<T, V>,
-    ) -> anyhow::Result<V>
-    where
-        <V as TryFrom<Bytes>>::Error: Display,
-    {
-        let pad = self._scratchpad_get(address.as_ref()).await?;
-        Ok(PlaintextScratchpad::<T, V>::try_from_scratchpad(pad)?.try_into_inner()?)
-    }
-
-    async fn _scratchpad_get(&self, address: &ScratchpadAddress) -> anyhow::Result<Scratchpad> {
-        self.scratchpad_cache
-            .try_get_with_by_ref(
-                address,
-                self.client.scratchpad_get_from_public_key(address.owner()),
-            )
-            .await
-            .map_err(|e| e.into())
-    }
-
-    async fn update_scratchpad<T: Clone + PartialEq, V: ScratchpadContent>(
-        &self,
-        content: V,
-        owner: &TypedOwnedScratchpad<T, V>,
-        receipt: &mut Receipt,
-    ) -> anyhow::Result<u64> {
-        let mut pad = PlaintextScratchpad::try_from_scratchpad(
-            self._scratchpad_get(owner.address().as_ref()).await?,
-        )?;
-        let counter = pad.update(content)?;
-        let address = pad.address().as_ref().clone();
-        let res = self
-            .client
-            .scratchpad_put(pad.try_into_scratchpad(owner)?, self.payment())
-            .await;
-        self.scratchpad_cache.invalidate(&address).await;
-        let (attos, _) = res?;
-        receipt.add(attos);
-        Ok(counter)
-    }
-
-    async fn danger_retire_scratchpad<T: Clone + PartialEq, V: ScratchpadContent + Retirable>(
-        &self,
-        owner: &TypedOwnedScratchpad<T, V>,
-        receipt: &mut Receipt,
-    ) -> anyhow::Result<()> {
-        let pad = PlaintextScratchpad::try_from_scratchpad(
-            self._scratchpad_get(owner.address().as_ref()).await?,
-        )?;
-        let address = pad.address().as_ref().clone();
-        let res = self
-            .client
-            .scratchpad_put(pad.retire(owner)?, self.payment())
-            .await;
-        self.scratchpad_cache.invalidate(&address).await;
-        let (attos, _) = res?;
-        receipt.add(attos);
-        Ok(())
     }
 
     async fn put_chunk<T>(

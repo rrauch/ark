@@ -11,9 +11,9 @@ pub(crate) use crate::crypto::encrypt::{
 };
 pub(crate) use crate::crypto::keyring::KeyRing;
 use anyhow::anyhow;
-use autonomi::client::key_derivation::{DerivationIndex, MainSecretKey};
+use autonomi::client::key_derivation::DerivationIndex;
 use autonomi::register::RegisterAddress;
-use autonomi::{PublicKey, ScratchpadAddress, SecretKey, XorName};
+use autonomi::{PublicKey, XorName};
 use sn_bls_ckd::derive_master_sk;
 use sn_curv::elliptic::curves::ECScalar;
 
@@ -23,13 +23,13 @@ pub(crate) use crate::crypto::encrypt::{
 };
 pub(crate) use chunk::{TypedChunk, TypedChunkAddress};
 pub(crate) use keys::{
-    EitherKey, RetiredKey, TypedDerivationIndex, TypedPublicKey, TypedSecretKey,
+    AllowDerivation, Derived, DerivedPublicKey, DerivedSecretKey, EitherKey, RetiredKey,
+    TypedDerivationIndex, TypedPublicKey, TypedSecretKey,
 };
 pub(crate) use pointer::{TypedOwnedPointer, TypedPointerAddress};
 pub(crate) use register::{TypedOwnedRegister, TypedRegisterAddress};
 pub(crate) use scratchpad::{
-    Content as ScratchpadContent, EncryptedContent as EncryptedScratchpadContent,
-    PlaintextScratchpad, TypedOwnedScratchpad, TypedScratchpadAddress,
+    Content as ScratchpadContent, TypedOwnedScratchpad, TypedScratchpadAddress,
 };
 
 #[macro_export]
@@ -127,28 +127,4 @@ pub(crate) fn eip2333(seed: impl AsRef<[u8]>) -> anyhow::Result<[u8; 32]> {
         .serialize() // Get the 32-byte Big-Endian representation
         .into(); // Convert GenericArray<u8, 32> to [u8; 32]
     Ok(key_bytes)
-}
-
-pub(crate) fn key_from_name(owner: &SecretKey, name: &str) -> SecretKey {
-    let main_key = MainSecretKey::new(owner.clone());
-    let derivation_index = DerivationIndex::from_bytes(XorName::from_content(name.as_bytes()).0);
-    main_key.derive_key(&derivation_index).into()
-}
-
-pub(crate) fn register_address_from_name(
-    owner: &PublicKey,
-    name: impl AsRef<str>,
-) -> RegisterAddress {
-    let derivation_index =
-        DerivationIndex::from_bytes(XorName::from_content(name.as_ref().as_bytes()).0);
-    RegisterAddress::new(owner.derive_child(derivation_index.as_bytes().as_slice()))
-}
-
-pub(crate) fn scratchpad_address_from_name(
-    owner: &PublicKey,
-    name: impl AsRef<str>,
-) -> ScratchpadAddress {
-    let derivation_index =
-        DerivationIndex::from_bytes(XorName::from_content(name.as_ref().as_bytes()).0);
-    ScratchpadAddress::new(owner.derive_child(derivation_index.as_bytes().as_slice()))
 }

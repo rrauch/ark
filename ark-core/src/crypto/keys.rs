@@ -28,8 +28,14 @@ impl<T> TypedSecretKey<T> {
         &self.public_key
     }
 
-    pub(crate) fn derive_child<C>(&self, idx: &TypedDerivationIndex<C>) -> TypedSecretKey<C> {
-        TypedSecretKey::new(self.inner.derive_child(idx.inner.as_bytes()))
+    pub fn derive_child<C>(
+        &self,
+        derivator: &<T as AllowDerivation<T, C>>::Derivator,
+    ) -> DerivedSecretKey<C, T>
+    where
+        T: AllowDerivation<T, C>,
+    {
+        derivator.derive_secret(&self)
     }
 
     pub(crate) fn as_ref(&self) -> &SecretKey {
@@ -79,10 +85,15 @@ pub struct TypedPublicKey<T> {
 }
 
 impl<T> TypedPublicKey<T> {
-    pub(crate) fn derive_child<C>(&self, idx: &TypedDerivationIndex<C>) -> TypedPublicKey<C> {
-        TypedPublicKey::from(self.inner.derive_child(idx.inner.as_bytes()))
+    pub fn derive_child<C>(
+        &self,
+        derivator: &<T as AllowDerivation<T, C>>::Derivator,
+    ) -> DerivedPublicKey<C, T>
+    where
+        T: AllowDerivation<T, C>,
+    {
+        derivator.derive_public(&self)
     }
-
     pub(crate) fn as_ref(&self) -> &PublicKey {
         &self.inner
     }
@@ -225,6 +236,42 @@ impl<T> Zeroize for EitherKey<T> {
             Self::Secret(sk) => sk.zeroize(),
             Self::Public(_) => {}
         }
+    }
+}
+
+pub trait AllowDerivation<T, C> {
+    type Derivator: Derivator<T, C>;
+}
+pub type DerivedSecretKey<T, P> = TypedSecretKey<Derived<T, P>>;
+pub type DerivedPublicKey<T, P> = TypedPublicKey<Derived<T, P>>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Derived<T, P> {
+    _type: PhantomData<T>,
+    _parent: PhantomData<P>,
+}
+
+impl<T, P> Default for Derived<T, P> {
+    fn default() -> Self {
+        Self {
+            _type: Default::default(),
+            _parent: Default::default(),
+        }
+    }
+}
+
+pub trait Derivator<T, C> {
+    fn derive_secret(&self, sk: &TypedSecretKey<T>) -> DerivedSecretKey<C, T>;
+    fn derive_public(&self, pk: &TypedPublicKey<T>) -> DerivedPublicKey<C, T>;
+}
+
+impl<T, C> Derivator<T, C> for TypedDerivationIndex<C> {
+    fn derive_secret(&self, sk: &TypedSecretKey<T>) -> DerivedSecretKey<C, T> {
+        TypedSecretKey::new(sk.inner.derive_child(self.inner.as_bytes()))
+    }
+
+    fn derive_public(&self, pk: &TypedPublicKey<T>) -> DerivedPublicKey<C, T> {
+        TypedPublicKey::from(pk.inner.derive_child(self.inner.as_bytes()))
     }
 }
 

@@ -1,23 +1,14 @@
 use crate::crypto::Bech32Public;
-use crate::data_key::{
-    DataKeyRingAddress, DataKeyRingOwner, DataKeySeed, DataRegister, DataRegisterAddress,
-};
-use crate::helm_key::{HelmKeySeed, HelmRegister, HelmRegisterAddress};
-use crate::{
-    ConfidentialString, DataKey, EitherWorkerKey, HelmKey, PublicHelmKey, PublicWorkerKey, SealKey,
-};
+use crate::data_key::DataKeySeed;
+use crate::{ConfidentialString, DataKey, EitherWorkerKey, HelmKey, PublicWorkerKey, SealKey};
 
 use crate::{Core, Progress, crypto, with_receipt};
 use anyhow::bail;
+use autonomi::PointerAddress;
 use autonomi::pointer::PointerTarget;
-use autonomi::{Client, PointerAddress};
 use bip39::Mnemonic;
 use blsttc::SecretKey;
 use zeroize::Zeroize;
-
-const DATA_KEYRING_NAME: &str = "/ark/v0/data/keyring/scratchpad";
-const DATA_REGISTER_NAME: &str = "/ark/v0/data/register";
-const HELM_REGISTER_NAME: &str = "/ark/v0/helm/register";
 
 impl TryFrom<Mnemonic> for ArkSeed {
     type Error = anyhow::Error;
@@ -67,39 +58,6 @@ impl ArkSeed {
     pub fn address(&self) -> &ArkAddress {
         self.public_key()
     }
-
-    pub fn helm_register(&self) -> HelmRegister {
-        let owner = crypto::TypedSecretKey::new(Client::register_key_from_name(
-            self.as_ref(),
-            HELM_REGISTER_NAME,
-        ));
-
-        HelmRegister::new(owner)
-    }
-
-    pub fn helm_key(&self, seed: &HelmKeySeed) -> HelmKey {
-        self.derive_child(seed)
-    }
-
-    pub fn data_register(&self) -> DataRegister {
-        let owner = crypto::TypedSecretKey::new(Client::register_key_from_name(
-            self.as_ref(),
-            DATA_REGISTER_NAME,
-        ));
-
-        DataRegister::new(owner)
-    }
-
-    pub fn data_key(&self, seed: &DataKeySeed) -> DataKey {
-        self.derive_child(seed)
-    }
-
-    pub fn data_keyring(&self) -> DataKeyRingOwner {
-        let owner =
-            crypto::TypedSecretKey::new(crypto::key_from_name(self.as_ref(), DATA_KEYRING_NAME));
-
-        DataKeyRingOwner::new(owner)
-    }
 }
 
 impl Bech32Public for ArkRoot {
@@ -109,33 +67,8 @@ impl Bech32Public for ArkRoot {
 pub type ArkAddress = crypto::TypedPublicKey<ArkRoot>;
 
 impl ArkAddress {
-    pub fn helm_register(&self) -> HelmRegisterAddress {
-        HelmRegisterAddress::new(crypto::register_address_from_name(
-            self.as_ref(),
-            HELM_REGISTER_NAME,
-        ))
-    }
-
-    pub fn helm_key(&self, seed: &HelmKeySeed) -> PublicHelmKey {
-        self.derive_child(seed)
-    }
-
-    pub fn data_register(&self) -> DataRegisterAddress {
-        DataRegisterAddress::new(crypto::register_address_from_name(
-            self.as_ref(),
-            DATA_REGISTER_NAME,
-        ))
-    }
-
     pub fn seal_key(&self, seed: &DataKeySeed) -> SealKey {
         self.derive_child(seed)
-    }
-
-    pub fn data_keyring(&self) -> DataKeyRingAddress {
-        DataKeyRingAddress::new(crypto::scratchpad_address_from_name(
-            self.as_ref(),
-            DATA_KEYRING_NAME,
-        ))
     }
 }
 

@@ -18,6 +18,12 @@ pub struct KeyRing<T> {
     key_map: HashMap<TypedPublicKey<T>, TypedSecretKey<T>>,
 }
 
+impl<T: PartialEq + Eq + Hash> PartialEq for KeyRing<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.key_map == other.key_map
+    }
+}
+
 impl<T> KeyRing<T> {
     pub fn len(&self) -> usize {
         self.key_map.len()

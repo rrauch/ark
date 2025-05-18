@@ -1,12 +1,11 @@
 use crate::ark::ArkCreationSettings;
-use crate::crypto::{
-    AgeEncryptionScheme, EncryptedData, Retirable, ScratchpadContent, TypedOwnedScratchpad,
-    TypedScratchpadAddress,
-};
-use std::collections::BTreeSet;
-
 use crate::crypto::TypedEncryptor;
-use crate::helm_key::HelmKeyKind;
+use crate::crypto::{
+    AgeEncryptionScheme, AllowDerivation, Derived, EncryptedData, Retirable, ScratchpadContent,
+    TypedDerivationIndex, TypedOwnedScratchpad, TypedPublicKey, TypedScratchpadAddress,
+    TypedSecretKey,
+};
+use crate::helm_key::HelmKind;
 use crate::protos::{deserialize_with_header, serialize_with_header};
 use crate::vault::{VaultConfig, VaultCreationSettings};
 use crate::{
@@ -14,15 +13,24 @@ use crate::{
     Receipt, RetiredWorkerKey, SealKey, VaultAddress, WorkerKey, decryptor, encryptor,
     impl_decryptor_for,
 };
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
+use once_cell::sync::Lazy;
+use std::collections::BTreeSet;
+use std::ops::Deref;
 
 const MAGIC_NUMBER: &'static [u8; 16] = &[
     0x61, 0x72, 0x6B, 0x5F, 0x6D, 0x61, 0x6E, 0x69, 0x66, 0x65, 0x73, 0x74, 0x5F, 0x76, 0x30, 0x30,
 ];
 
 const MANIFEST_SCRATCHPAD_ENCODING: u64 = 344850175421548714;
+
+const MANIFEST_NAME: &str = "/ark/v0/manifest/scratchpad";
+static MANIFEST_DERIVATOR: Lazy<ManifestDerivator> =
+    Lazy::new(|| ManifestDerivator::from_name(MANIFEST_NAME));
+
+type ManifestDerivator = TypedDerivationIndex<Manifest>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Manifest {
@@ -77,9 +85,25 @@ impl crate::crypto::TypedDecryptor<Manifest> for ArkAccessor {
         self.secret_key()
     }
 }
+pub type ManifestScratchpadKind = Derived<Manifest, HelmKind>;
+pub type OwnedManifest = TypedOwnedScratchpad<ManifestScratchpadKind, EncryptedManifest>;
+pub type ManifestAddress = TypedScratchpadAddress<ManifestScratchpadKind, EncryptedManifest>;
 
-pub type OwnedManifest = TypedOwnedScratchpad<HelmKeyKind, EncryptedManifest>;
-pub type ManifestAddress = TypedScratchpadAddress<HelmKeyKind, EncryptedManifest>;
+impl AllowDerivation<HelmKind, Manifest> for HelmKind {
+    type Derivator = ManifestDerivator;
+}
+
+impl HelmKey {
+    pub(super) fn derive_manifest_key(&self) -> TypedSecretKey<ManifestScratchpadKind> {
+        self.derive_child(MANIFEST_DERIVATOR.deref())
+    }
+}
+
+impl PublicHelmKey {
+    pub(super) fn derive_manifest_addr(&self) -> TypedPublicKey<ManifestScratchpadKind> {
+        self.derive_child(MANIFEST_DERIVATOR.deref())
+    }
+}
 
 impl From<VaultCreationSettings> for VaultConfig {
     fn from(value: VaultCreationSettings) -> Self {
@@ -163,10 +187,9 @@ impl Core {
         helm_key: &HelmKey,
         manifest_encryptor: &ManifestEncryptor,
         receipt: &mut Receipt,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<ManifestAddress> {
         self.create_encrypted_scratchpad(
-            manifest_encryptor.encrypt_manifest(&manifest)?,
-            &helm_key.manifest(),
+            helm_key.manifest(manifest_encryptor.encrypt_manifest(&manifest)?),
             receipt,
         )
         .await
@@ -186,7 +209,9 @@ impl Core {
         decryptor: &D,
         public_helm_key: &PublicHelmKey,
     ) -> anyhow::Result<Manifest> {
-        let encrypted_manifest = self.read_scratchpad(&public_helm_key.manifest()).await?;
+        let encrypted_manifest = self
+            .read_scratchpad_content(&public_helm_key.manifest())
+            .await?;
         decryptor.decrypt_manifest(&encrypted_manifest)
     }
 
@@ -213,10 +238,11 @@ impl Core {
         }
         self.verify_helm_key(helm_key).await?;
         self.update_scratchpad(
-            self.manifest_encryptor(helm_key)
-                .await?
-                .encrypt_manifest(&manifest)?,
-            &helm_key.manifest(),
+            helm_key.manifest(
+                self.manifest_encryptor(helm_key)
+                    .await?
+                    .encrypt_manifest(&manifest)?,
+            ),
             receipt,
         )
         .await
@@ -233,8 +259,15 @@ impl Core {
                 self.ark_address
             )
         };
-        self.danger_retire_scratchpad(&helm_key.manifest(), receipt)
-            .await?;
+
+        self.danger_retire_scratchpad(
+            self.get_scratchpad(&helm_key.public_key().manifest())
+                .await?
+                .ok_or(anyhow!("manifest not found"))?
+                .try_into_owned(&helm_key.derive_manifest_key())?,
+            receipt,
+        )
+        .await?;
         Ok(())
     }
 }

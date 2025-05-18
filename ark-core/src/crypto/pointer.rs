@@ -38,7 +38,7 @@ impl<T, V> TypedPointerAddress<T, V> {
 impl<T> TryFrom<PointerTarget> for TypedPublicKey<T> {
     type Error = anyhow::Error;
 
-    fn try_from(value: PointerTarget) -> std::result::Result<Self, Self::Error> {
+    fn try_from(value: PointerTarget) -> Result<Self, Self::Error> {
         match value {
             PointerTarget::PointerAddress(addr) => Ok(Self::from(addr.owner().clone())),
             _ => Err(anyhow!("not an address pointer")),
@@ -230,7 +230,7 @@ impl Core {
 
     async fn update_pointer<T, V: Into<PointerTarget>>(
         &self,
-        pointer: TypedOwnedPointer<T, V>,
+        mut pointer: TypedOwnedPointer<T, V>,
         receipt: &mut Receipt,
     ) -> anyhow::Result<u32> {
         let existing = self
@@ -241,13 +241,13 @@ impl Core {
             bail!("pointer is immutable");
         }
 
-        let pointer = pointer.into_pointer();
-
-        if existing.counter() > pointer.counter() {
-            bail!("existing pointer has higher version number");
+        if existing.counter() > pointer.inner.counter {
+            pointer.inner.counter = existing.counter() + 1;
         }
 
-        if existing.target() == pointer.target() && existing.counter() == pointer.counter() {
+        let pointer = pointer.into_pointer();
+
+        if existing == pointer {
             // nothing has changed
             // no need to send to the network
             return Ok(existing.counter());

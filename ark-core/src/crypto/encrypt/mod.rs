@@ -1,7 +1,7 @@
 mod age;
 
-use crate::crypto::Retirable;
 use crate::crypto::keys::{TypedPublicKey, TypedSecretKey};
+use crate::crypto::{Finalizeable, Retirable};
 use anyhow::anyhow;
 use blsttc::{Ciphertext, PublicKey, SecretKey};
 use bytes::{Bytes, BytesMut};
@@ -26,6 +26,7 @@ impl<T, V, S: EncryptionScheme> AsRef<S::EncryptedData> for EncryptedData<T, V, 
 }
 
 impl<T, V: Retirable, S: EncryptionScheme> Retirable for EncryptedData<T, V, S> {}
+impl<T, V: Finalizeable, S: EncryptionScheme> Finalizeable for EncryptedData<T, V, S> {}
 
 pub trait EncryptionScheme {
     type Encryptor;

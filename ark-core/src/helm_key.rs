@@ -1,41 +1,83 @@
+use crate::ark_seed::ArkRoot;
 use crate::crypto::{
-    Bech32Secret, TypedDerivationIndex, TypedOwnedRegister, TypedPublicKey, TypedRegisterAddress,
-    TypedSecretKey, key_from_name, scratchpad_address_from_name,
+    AllowDerivation, Bech32Secret, Derived, TypedDerivationIndex, TypedOwnedRegister,
+    TypedPublicKey, TypedRegisterAddress, TypedSecretKey,
 };
-use crate::manifest::{ManifestAddress, OwnedManifest};
+use crate::manifest::{EncryptedManifest, ManifestAddress, OwnedManifest};
 use crate::progress::Task;
-use crate::{ArkSeed, Core, Progress, Receipt, with_receipt};
+use crate::{ArkAddress, ArkSeed, Core, Progress, Receipt, with_receipt};
 use anyhow::bail;
+use autonomi::register::RegisterAddress;
+use once_cell::sync::Lazy;
+use std::ops::Deref;
 
-const MANIFEST_NAME: &str = "/ark/v0/manifest/scratchpad";
+const HELM_REGISTER_NAME: &str = "/ark/v0/helm/register";
+static HELM_REGISTER_DERIVATOR: Lazy<HelmRegisterDerivator> =
+    Lazy::new(|| HelmRegisterDerivator::from_name(HELM_REGISTER_NAME));
+
+type HelmRegisterDerivator = TypedDerivationIndex<HelmRegister>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct HelmRegisterKind;
-pub type HelmRegister = TypedOwnedRegister<HelmRegisterKind, HelmKeySeed>;
+pub struct HelmRegister;
+
+pub type HelmRegisterKind = Derived<HelmRegister, ArkRoot>;
+
+impl AllowDerivation<ArkRoot, HelmRegister> for ArkRoot {
+    type Derivator = HelmRegisterDerivator;
+}
+
+pub type OwnedHelmRegister = TypedOwnedRegister<HelmRegisterKind, HelmKeySeed>;
 pub type HelmRegisterAddress = TypedRegisterAddress<HelmRegisterKind, HelmKeySeed>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct HelmKeyKind;
+pub struct Helm;
 
-impl Bech32Secret for HelmKeyKind {
+impl AllowDerivation<ArkRoot, Helm> for ArkRoot {
+    type Derivator = HelmKeySeed;
+}
+
+pub type HelmKind = Derived<Helm, ArkRoot>;
+
+impl Bech32Secret for HelmKind {
     const HRP: &'static str = "arkhelmsec";
 }
 
-pub type HelmKeySeed = TypedDerivationIndex<HelmKeyKind>;
-pub type HelmKey = TypedSecretKey<HelmKeyKind>;
+pub type HelmKeySeed = TypedDerivationIndex<Helm>;
+pub type HelmKey = TypedSecretKey<HelmKind>;
 
 impl HelmKey {
-    pub fn manifest(&self) -> OwnedManifest {
-        let owner = TypedSecretKey::new(key_from_name(self.as_ref(), MANIFEST_NAME));
-
-        OwnedManifest::new(owner)
+    pub fn manifest(&self, value: EncryptedManifest) -> OwnedManifest {
+        OwnedManifest::new(value, self.derive_manifest_key())
     }
 }
-pub type PublicHelmKey = TypedPublicKey<HelmKeyKind>;
+pub type PublicHelmKey = TypedPublicKey<HelmKind>;
 
 impl PublicHelmKey {
     pub fn manifest(&self) -> ManifestAddress {
-        ManifestAddress::new(scratchpad_address_from_name(self.as_ref(), MANIFEST_NAME))
+        ManifestAddress::from_public_key(self.derive_manifest_addr())
+    }
+}
+
+impl ArkSeed {
+    pub fn helm_key(&self, seed: &HelmKeySeed) -> HelmKey {
+        self.derive_child(seed)
+    }
+
+    pub fn helm_register(&self) -> OwnedHelmRegister {
+        OwnedHelmRegister::new(self.derive_child(HELM_REGISTER_DERIVATOR.deref()))
+    }
+}
+
+impl ArkAddress {
+    pub fn helm_register(&self) -> HelmRegisterAddress {
+        HelmRegisterAddress::new(RegisterAddress::new(
+            self.derive_child::<HelmRegister>(HELM_REGISTER_DERIVATOR.deref())
+                .into(),
+        ))
+    }
+
+    pub fn helm_key(&self, seed: &HelmKeySeed) -> PublicHelmKey {
+        self.derive_child(seed)
     }
 }
 

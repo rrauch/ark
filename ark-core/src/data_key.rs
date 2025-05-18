@@ -1,27 +1,56 @@
+use crate::ark_seed::ArkRoot;
 use crate::crypto::{
-    Bech32Secret, EncryptedData, ScratchpadContent, TypedDecryptor, TypedDerivationIndex,
-    TypedEncryptor, TypedOwnedRegister, TypedOwnedScratchpad, TypedPublicKey, TypedRegisterAddress,
-    TypedScratchpadAddress, TypedSecretKey,
+    AllowDerivation, Bech32Secret, Derived, EncryptedData, ScratchpadContent, TypedDecryptor,
+    TypedDerivationIndex, TypedEncryptor, TypedOwnedRegister, TypedOwnedScratchpad, TypedPublicKey,
+    TypedRegisterAddress, TypedScratchpadAddress, TypedSecretKey,
 };
 use crate::progress::Task;
-use crate::{ArkSeed, Core, Progress, Receipt, with_receipt};
+use crate::{ArkAddress, ArkSeed, Core, Progress, Receipt, crypto, with_receipt};
 use anyhow::bail;
+use autonomi::register::RegisterAddress;
+use once_cell::sync::Lazy;
+use std::ops::Deref;
 
 const DATA_KEYRING_SCRATCHPAD_ENCODING: u64 = 845573457394578892;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct DataRegisterKind;
-pub type DataRegister = TypedOwnedRegister<DataRegisterKind, DataKeySeed>;
-pub type DataRegisterAddress = TypedRegisterAddress<DataRegisterKind, DataKeySeed>;
+const DATA_KEYRING_NAME: &str = "/ark/v0/data/keyring/scratchpad";
+static DATA_KEYRING_DERIVATION_IDX: Lazy<DataKeyringDerivator> =
+    Lazy::new(|| DataKeyringDerivator::from_name(DATA_KEYRING_NAME));
+
+type DataKeyringDerivator = TypedDerivationIndex<DataKeyRing>;
+
+const DATA_REGISTER_NAME: &str = "/ark/v0/data/register";
+static DATA_REGISTER_DERIVATOR: Lazy<DataRegisterDerivator> =
+    Lazy::new(|| DataRegisterDerivator::from_name(DATA_REGISTER_NAME));
+
+type DataRegisterDerivator = TypedDerivationIndex<DataRegister>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct DataKeyKind;
+pub struct DataRegister;
+
+pub type DataRegisterKind = Derived<DataRegister, ArkRoot>;
+
+pub type OwnedDataRegister = TypedOwnedRegister<DataRegisterKind, DataKeySeed>;
+pub type DataRegisterAddress = TypedRegisterAddress<DataRegisterKind, DataKeySeed>;
+
+impl AllowDerivation<ArkRoot, DataRegister> for ArkRoot {
+    type Derivator = DataRegisterDerivator;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Data;
+
+impl AllowDerivation<ArkRoot, Data> for ArkRoot {
+    type Derivator = DataKeySeed;
+}
+
+pub type DataKeyKind = Derived<Data, ArkRoot>;
 
 impl Bech32Secret for DataKeyKind {
     const HRP: &'static str = "arkdatasec";
 }
 
-pub type DataKeySeed = TypedDerivationIndex<DataKeyKind>;
+pub type DataKeySeed = TypedDerivationIndex<Data>;
 pub type DataKey = TypedSecretKey<DataKeyKind>;
 
 impl DataKey {
@@ -44,7 +73,7 @@ impl SealKey {
     }
 }
 
-pub type DataKeyRing = crate::crypto::KeyRing<DataKeyKind>;
+pub type DataKeyRing = crypto::KeyRing<DataKeyKind>;
 
 impl ScratchpadContent for DataKeyRing {
     const ENCODING: u64 = DATA_KEYRING_SCRATCHPAD_ENCODING;
@@ -52,21 +81,51 @@ impl ScratchpadContent for DataKeyRing {
 
 pub type EncryptedDataKeyRing = EncryptedData<DataKeyKind, DataKeyRing>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct DataKeyRingKind;
+pub type DataKeyRingKind = Derived<DataKeyRing, ArkRoot>;
 
-pub type DataKeyRingOwner =
-    TypedOwnedScratchpad<DataKeyRingKind, EncryptedData<DataKeyKind, DataKeyRing>>;
+impl AllowDerivation<ArkRoot, DataKeyRing> for ArkRoot {
+    type Derivator = DataKeyringDerivator;
+}
 
-pub type DataKeyRingAddress =
-    TypedScratchpadAddress<DataKeyRingKind, EncryptedData<DataKeyKind, DataKeyRing>>;
+pub type OwnedDataKeyRing = TypedOwnedScratchpad<DataKeyRingKind, EncryptedDataKeyRing>;
+
+pub type DataKeyRingAddress = TypedScratchpadAddress<DataKeyRingKind, EncryptedDataKeyRing>;
+
+impl ArkSeed {
+    pub fn data_register(&self) -> OwnedDataRegister {
+        OwnedDataRegister::new(self.derive_child(DATA_REGISTER_DERIVATOR.deref()))
+    }
+    pub fn data_key(&self, seed: &DataKeySeed) -> DataKey {
+        self.derive_child(seed)
+    }
+
+    pub fn data_keyring(&self, value: EncryptedDataKeyRing) -> OwnedDataKeyRing {
+        OwnedDataKeyRing::new(
+            value,
+            self.derive_child(DATA_KEYRING_DERIVATION_IDX.deref()),
+        )
+    }
+}
+
+impl ArkAddress {
+    pub fn data_register(&self) -> DataRegisterAddress {
+        DataRegisterAddress::new(RegisterAddress::new(
+            self.derive_child::<DataRegister>(DATA_REGISTER_DERIVATOR.deref())
+                .into(),
+        ))
+    }
+
+    pub fn data_keyring(&self) -> DataKeyRingAddress {
+        DataKeyRingAddress::from_public_key(self.derive_child(DATA_KEYRING_DERIVATION_IDX.deref()))
+    }
+}
 
 impl Core {
     pub(super) async fn get_data_keyring(&self, data_key: &DataKey) -> anyhow::Result<DataKeyRing> {
         self.verify_data_key(data_key).await?;
         data_key.decrypt_data_keyring(
             &self
-                .read_scratchpad(&self.ark_address.data_keyring())
+                .read_scratchpad_content(&self.ark_address.data_keyring())
                 .await?,
         )
     }
@@ -94,10 +153,11 @@ impl Core {
         with_receipt(async move |receipt| {
             self.verify_ark_seed(ark_seed)?;
             self.update_scratchpad(
-                self.seal_key()
-                    .await?
-                    .encrypt_data_keyring(&self.derive_data_keyring(&ark_seed).await?)?,
-                &ark_seed.data_keyring(),
+                ark_seed.data_keyring(
+                    self.seal_key()
+                        .await?
+                        .encrypt_data_keyring(&self.derive_data_keyring(&ark_seed).await?)?,
+                ),
                 receipt,
             )
             .await
@@ -168,10 +228,11 @@ impl Core {
 
         update_keyring.start();
         self.update_scratchpad(
-            new_data_key
-                .public_key()
-                .encrypt_data_keyring(&self.derive_data_keyring(&ark_seed).await?)?,
-            &ark_seed.data_keyring(),
+            ark_seed.data_keyring(
+                new_data_key
+                    .public_key()
+                    .encrypt_data_keyring(&self.derive_data_keyring(&ark_seed).await?)?,
+            ),
             receipt,
         )
         .await?;

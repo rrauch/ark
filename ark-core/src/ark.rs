@@ -99,10 +99,11 @@ async fn create(
     let data_key = ark_seed.data_key(&data_key_seed);
 
     core.create_encrypted_scratchpad(
-        data_key
-            .public_key()
-            .encrypt_data_keyring(&core.derive_data_keyring(&ark_seed).await?)?,
-        &ark_seed.data_keyring(),
+        ark_seed.data_keyring(
+            data_key
+                .public_key()
+                .encrypt_data_keyring(&core.derive_data_keyring(&ark_seed).await?)?,
+        ),
         receipt,
     )
     .await?;
