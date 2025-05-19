@@ -11,9 +11,6 @@ pub(crate) use crate::crypto::encrypt::{
 };
 pub(crate) use crate::crypto::keyring::KeyRing;
 use anyhow::anyhow;
-use autonomi::client::key_derivation::DerivationIndex;
-use autonomi::register::RegisterAddress;
-use autonomi::{PublicKey, XorName};
 use sn_bls_ckd::derive_master_sk;
 use sn_curv::elliptic::curves::ECScalar;
 
@@ -27,7 +24,7 @@ pub(crate) use keys::{
     TypedDerivationIndex, TypedPublicKey, TypedSecretKey,
 };
 pub(crate) use pointer::{TypedOwnedPointer, TypedPointerAddress};
-pub(crate) use register::{TypedOwnedRegister, TypedRegisterAddress};
+pub(crate) use register::{TypedOwnedRegister, TypedRegister, TypedRegisterAddress};
 pub(crate) use scratchpad::{
     Content as ScratchpadContent, TypedOwnedScratchpad, TypedScratchpadAddress,
 };

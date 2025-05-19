@@ -1,12 +1,12 @@
 use crate::ark_seed::ArkRoot;
 use crate::crypto::{
     AllowDerivation, Bech32Secret, Derived, TypedDerivationIndex, TypedOwnedRegister,
-    TypedPublicKey, TypedRegisterAddress, TypedSecretKey,
+    TypedPublicKey, TypedRegister, TypedRegisterAddress, TypedSecretKey,
 };
 use crate::manifest::{EncryptedManifest, ManifestAddress, OwnedManifest};
 use crate::progress::Task;
 use crate::{ArkAddress, ArkSeed, Core, Progress, Receipt, with_receipt};
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 use autonomi::register::RegisterAddress;
 use once_cell::sync::Lazy;
 use std::ops::Deref;
@@ -15,19 +15,21 @@ const HELM_REGISTER_NAME: &str = "/ark/v0/helm/register";
 static HELM_REGISTER_DERIVATOR: Lazy<HelmRegisterDerivator> =
     Lazy::new(|| HelmRegisterDerivator::from_name(HELM_REGISTER_NAME));
 
-type HelmRegisterDerivator = TypedDerivationIndex<HelmRegister>;
+type HelmRegisterDerivator = TypedDerivationIndex<HelmRegisterKind>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct HelmRegister;
+pub struct HelmRegisterKind;
 
-pub type HelmRegisterKind = Derived<HelmRegister, ArkRoot>;
+pub type HelmRegister = TypedRegister<HelmRegisterOwner, HelmKeySeed>;
 
-impl AllowDerivation<ArkRoot, HelmRegister> for ArkRoot {
+pub type HelmRegisterOwner = Derived<HelmRegisterKind, ArkRoot>;
+
+impl AllowDerivation<ArkRoot, HelmRegisterKind> for ArkRoot {
     type Derivator = HelmRegisterDerivator;
 }
 
-pub type OwnedHelmRegister = TypedOwnedRegister<HelmRegisterKind, HelmKeySeed>;
-pub type HelmRegisterAddress = TypedRegisterAddress<HelmRegisterKind, HelmKeySeed>;
+pub type OwnedHelmRegister = TypedOwnedRegister<HelmRegisterOwner, HelmKeySeed>;
+pub type HelmRegisterAddress = TypedRegisterAddress<HelmRegisterOwner, HelmKeySeed>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Helm;
@@ -58,24 +60,36 @@ impl PublicHelmKey {
     }
 }
 
-impl ArkSeed {
-    pub fn helm_key(&self, seed: &HelmKeySeed) -> HelmKey {
-        self.derive_child(seed)
-    }
-
-    pub fn helm_register(&self) -> OwnedHelmRegister {
-        OwnedHelmRegister::new(self.derive_child(HELM_REGISTER_DERIVATOR.deref()))
+impl OwnedHelmRegister {
+    pub fn new_derived(ark_seed: &ArkSeed) -> Self {
+        Self::new(
+            HelmKeySeed::random(),
+            ark_seed.derive_child(HELM_REGISTER_DERIVATOR.deref()),
+        )
     }
 }
 
-impl ArkAddress {
-    pub fn helm_register(&self) -> HelmRegisterAddress {
+impl HelmRegister {
+    pub fn derive_address(ark_address: &ArkAddress) -> HelmRegisterAddress {
         HelmRegisterAddress::new(RegisterAddress::new(
-            self.derive_child::<HelmRegister>(HELM_REGISTER_DERIVATOR.deref())
+            ark_address
+                .derive_child::<HelmRegisterKind>(HELM_REGISTER_DERIVATOR.deref())
                 .into(),
         ))
     }
 
+    pub fn into_owned(self, ark_seed: &ArkSeed) -> anyhow::Result<OwnedHelmRegister> {
+        Ok(self.try_into_owned(&(ark_seed.derive_child(HELM_REGISTER_DERIVATOR.deref())))?)
+    }
+}
+
+impl ArkSeed {
+    pub fn helm_key(&self, seed: &HelmKeySeed) -> HelmKey {
+        self.derive_child(seed)
+    }
+}
+
+impl ArkAddress {
     pub fn helm_key(&self, seed: &HelmKeySeed) -> PublicHelmKey {
         self.derive_child(seed)
     }
@@ -86,7 +100,7 @@ impl Core {
     pub(super) async fn public_helm_key(&self) -> anyhow::Result<PublicHelmKey> {
         Ok(self.ark_address.helm_key(
             &self
-                .read_register(&self.ark_address.helm_register())
+                .read_register(&HelmRegister::derive_address(&self.ark_address))
                 .await?,
         ))
     }
@@ -95,7 +109,7 @@ impl Core {
     pub(super) async fn helm_key(&self, ark_seed: &ArkSeed) -> anyhow::Result<HelmKey> {
         Ok(ark_seed.helm_key(
             &self
-                .read_register(&ark_seed.helm_register().address())
+                .read_register(&HelmRegister::derive_address(ark_seed.address()))
                 .await?,
         ))
     }
@@ -157,8 +171,14 @@ impl Core {
         let new_helm_key = ark_seed.helm_key(&new_helm_key_seed);
         update_keys += 1;
 
-        self.update_register(&ark_seed.helm_register(), new_helm_key_seed, receipt)
-            .await?;
+        let mut helm_register = self
+            .get_register(&HelmRegister::derive_address(ark_seed.public_key()))
+            .await?
+            .ok_or(anyhow!("helm register not found"))?
+            .into_owned(ark_seed)?;
+        helm_register.update(new_helm_key_seed)?;
+
+        self.update_register(helm_register, receipt).await?;
         manifest_encryptor.public_helm_key = new_helm_key.public_key().clone();
         update_keys.complete();
 

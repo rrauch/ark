@@ -5,6 +5,7 @@ members = ["ark-core", "ark-cli", "ark-engine", "ark-transport"]
 [workspace.dependencies]
 anyhow = "1.0"
 autonomi = "0.4.6"
+ant-networking = "0.3"
 bip39 = "2.1.0"
 bytes = "1.10"
 chrono = "0.4"

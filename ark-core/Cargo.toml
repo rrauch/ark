@@ -9,6 +9,7 @@ age-core = "0.11"
 anyhow = { workspace = true, features = ["backtrace"] }
 autonomi = { workspace = true }
 ant-bootstrap = "0.2.2"
+ant-networking = { workspace = true }
 bech32 = { version = "0.11", features = ["alloc"] }
 bip39 = { workspace = true, features = ["zeroize", "rand"] }
 blsttc = "8.0.2"

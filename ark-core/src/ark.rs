@@ -1,5 +1,5 @@
-use crate::data_key::DataKeySeed;
-use crate::helm_key::HelmKeySeed;
+use crate::data_key::OwnedDataRegister;
+use crate::helm_key::OwnedHelmRegister;
 use crate::manifest::{Manifest, ManifestEncryptor};
 use crate::progress::Task;
 use crate::worker_key::{EitherWorkerKey, WorkerKey};
@@ -80,23 +80,19 @@ async fn create(
     seed_task.complete();
 
     helm_key_task.start();
-    let helm_register = ark_seed.helm_register();
-    let helm_key_seed = HelmKeySeed::random();
+    let helm_register = OwnedHelmRegister::new_derived(&ark_seed);
+    let helm_key = ark_seed.helm_key(helm_register.value());
     helm_key_task += 1;
-    core.create_register(&helm_register, helm_key_seed.clone(), receipt)
-        .await?;
+    core.create_register(helm_register, receipt).await?;
     helm_key_task += 1;
-    let helm_key = ark_seed.helm_key(&helm_key_seed);
     helm_key_task.complete();
 
     data_key_task.start();
-    let data_register = ark_seed.data_register();
-    let data_key_seed = DataKeySeed::random();
+    let data_register = OwnedDataRegister::new_derived(&ark_seed);
+    let data_key = ark_seed.data_key(data_register.value());
     data_key_task += 1;
-    core.create_register(&data_register, data_key_seed.clone(), receipt)
-        .await?;
+    core.create_register(data_register, receipt).await?;
     data_key_task += 1;
-    let data_key = ark_seed.data_key(&data_key_seed);
 
     core.create_encrypted_scratchpad(
         ark_seed.data_keyring(

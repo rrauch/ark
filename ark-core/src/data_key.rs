@@ -2,11 +2,11 @@ use crate::ark_seed::ArkRoot;
 use crate::crypto::{
     AllowDerivation, Bech32Secret, Derived, EncryptedData, ScratchpadContent, TypedDecryptor,
     TypedDerivationIndex, TypedEncryptor, TypedOwnedRegister, TypedOwnedScratchpad, TypedPublicKey,
-    TypedRegisterAddress, TypedScratchpadAddress, TypedSecretKey,
+    TypedRegister, TypedRegisterAddress, TypedScratchpadAddress, TypedSecretKey,
 };
 use crate::progress::Task;
 use crate::{ArkAddress, ArkSeed, Core, Progress, Receipt, crypto, with_receipt};
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 use autonomi::register::RegisterAddress;
 use once_cell::sync::Lazy;
 use std::ops::Deref;
@@ -23,17 +23,19 @@ const DATA_REGISTER_NAME: &str = "/ark/v0/data/register";
 static DATA_REGISTER_DERIVATOR: Lazy<DataRegisterDerivator> =
     Lazy::new(|| DataRegisterDerivator::from_name(DATA_REGISTER_NAME));
 
-type DataRegisterDerivator = TypedDerivationIndex<DataRegister>;
+type DataRegisterDerivator = TypedDerivationIndex<DataRegisterKind>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct DataRegister;
+pub struct DataRegisterKind;
 
-pub type DataRegisterKind = Derived<DataRegister, ArkRoot>;
+pub type DataRegisterOwner = Derived<DataRegisterKind, ArkRoot>;
 
-pub type OwnedDataRegister = TypedOwnedRegister<DataRegisterKind, DataKeySeed>;
-pub type DataRegisterAddress = TypedRegisterAddress<DataRegisterKind, DataKeySeed>;
+pub type DataRegister = TypedRegister<DataRegisterOwner, DataKeySeed>;
 
-impl AllowDerivation<ArkRoot, DataRegister> for ArkRoot {
+pub type OwnedDataRegister = TypedOwnedRegister<DataRegisterOwner, DataKeySeed>;
+pub type DataRegisterAddress = TypedRegisterAddress<DataRegisterOwner, DataKeySeed>;
+
+impl AllowDerivation<ArkRoot, DataRegisterKind> for ArkRoot {
     type Derivator = DataRegisterDerivator;
 }
 
@@ -91,10 +93,30 @@ pub type OwnedDataKeyRing = TypedOwnedScratchpad<DataKeyRingKind, EncryptedDataK
 
 pub type DataKeyRingAddress = TypedScratchpadAddress<DataKeyRingKind, EncryptedDataKeyRing>;
 
-impl ArkSeed {
-    pub fn data_register(&self) -> OwnedDataRegister {
-        OwnedDataRegister::new(self.derive_child(DATA_REGISTER_DERIVATOR.deref()))
+impl DataRegister {
+    pub fn derive_address(ark_address: &ArkAddress) -> DataRegisterAddress {
+        DataRegisterAddress::new(RegisterAddress::new(
+            ark_address
+                .derive_child::<DataRegisterKind>(DATA_REGISTER_DERIVATOR.deref())
+                .into(),
+        ))
     }
+
+    pub fn into_owned(self, ark_seed: &ArkSeed) -> anyhow::Result<OwnedDataRegister> {
+        Ok(self.try_into_owned(&(ark_seed.derive_child(DATA_REGISTER_DERIVATOR.deref())))?)
+    }
+}
+
+impl OwnedDataRegister {
+    pub fn new_derived(ark_seed: &ArkSeed) -> Self {
+        Self::new(
+            DataKeySeed::random(),
+            ark_seed.derive_child(DATA_REGISTER_DERIVATOR.deref()),
+        )
+    }
+}
+
+impl ArkSeed {
     pub fn data_key(&self, seed: &DataKeySeed) -> DataKey {
         self.derive_child(seed)
     }
@@ -108,13 +130,6 @@ impl ArkSeed {
 }
 
 impl ArkAddress {
-    pub fn data_register(&self) -> DataRegisterAddress {
-        DataRegisterAddress::new(RegisterAddress::new(
-            self.derive_child::<DataRegister>(DATA_REGISTER_DERIVATOR.deref())
-                .into(),
-        ))
-    }
-
     pub fn data_keyring(&self) -> DataKeyRingAddress {
         DataKeyRingAddress::from_public_key(self.derive_child(DATA_KEYRING_DERIVATION_IDX.deref()))
     }
@@ -125,7 +140,7 @@ impl Core {
         self.verify_data_key(data_key).await?;
         data_key.decrypt_data_keyring(
             &self
-                .read_scratchpad_content(&self.ark_address.data_keyring())
+                .read_scratchpad(&self.ark_address.data_keyring())
                 .await?,
         )
     }
@@ -143,7 +158,7 @@ impl Core {
     pub(super) async fn seal_key(&self) -> anyhow::Result<SealKey> {
         Ok(self.ark_address.seal_key(
             &self
-                .read_register(&self.ark_address.data_register())
+                .read_register(&DataRegister::derive_address(&self.ark_address))
                 .await?,
         ))
     }
@@ -172,10 +187,10 @@ impl Core {
     ) -> anyhow::Result<DataKeyRing> {
         self.verify_ark_seed(ark_seed)?;
         let keyring: DataKeyRing = self
-            .register_history(&ark_seed.public_key().data_register())
+            .register_history(&DataRegister::derive_address(&self.ark_address))
             .await?
             .into_iter()
-            .map(|seed| ark_seed.data_key(&seed))
+            .map(|seed| ark_seed.data_key(seed.as_ref()))
             .collect();
         if keyring.is_empty() {
             bail!("data_keyring is empty");
@@ -215,15 +230,18 @@ impl Core {
         verify_seed.complete();
 
         read_current.start();
-        let data_register = ark_seed.data_register();
+        let mut data_register = self
+            .get_register(&DataRegister::derive_address(ark_seed.address()))
+            .await?
+            .ok_or(anyhow!("data register not found"))?
+            .into_owned(ark_seed)?;
         read_current.complete();
 
         update_key.start();
-        let new_data_key_seed = DataKeySeed::random();
+        data_register.update(DataKeySeed::random())?;
         update_key += 1;
-        let new_data_key = ark_seed.data_key(&new_data_key_seed);
-        self.update_register(&data_register, new_data_key_seed, receipt)
-            .await?;
+        let new_data_key = ark_seed.data_key(data_register.value());
+        self.update_register(data_register, receipt).await?;
         update_key.complete();
 
         update_keyring.start();

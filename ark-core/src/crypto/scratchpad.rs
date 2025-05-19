@@ -321,7 +321,7 @@ impl Core {
         Ok(TypedScratchpadAddress::new(address))
     }
 
-    pub(crate) async fn read_scratchpad_content<T, V: Content>(
+    pub(crate) async fn read_scratchpad<T, V: Content>(
         &self,
         address: &TypedScratchpadAddress<T, V>,
     ) -> anyhow::Result<V>

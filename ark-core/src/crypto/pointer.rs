@@ -14,7 +14,7 @@ pub struct TypedPointerAddress<T, V> {
     _value_type: PhantomData<V>,
 }
 
-impl<T, V: Into<PointerTarget>> TypedPointerAddress<T, V> {
+impl<T, V> TypedPointerAddress<T, V> {
     pub(crate) fn new(inner: PointerAddress) -> Self {
         let owner = TypedPublicKey::from(inner.owner().clone());
         Self {
@@ -120,7 +120,7 @@ pub struct TypedPointer<T, V> {
     address: TypedPointerAddress<T, V>,
 }
 
-impl<T, V: TryFrom<PointerTarget> + Into<PointerTarget>> TypedPointer<T, V>
+impl<T, V: TryFrom<PointerTarget>> TypedPointer<T, V>
 where
     <V as TryFrom<PointerTarget>>::Error: Send + Sync + Display,
 {
@@ -228,6 +228,20 @@ impl Core {
         Ok(TypedPointerAddress::new(address))
     }
 
+    async fn get_pointer<T, V: TryFrom<PointerTarget>>(
+        &self,
+        address: &TypedPointerAddress<T, V>,
+    ) -> anyhow::Result<Option<TypedPointer<T, V>>>
+    where
+        <V as TryFrom<PointerTarget>>::Error: Send + Sync + Display,
+    {
+        Ok(self
+            ._pointer_get(address.as_ref())
+            .await?
+            .map(|p| TypedPointer::try_from_pointer(p))
+            .transpose()?)
+    }
+
     async fn update_pointer<T, V: Into<PointerTarget>>(
         &self,
         mut pointer: TypedOwnedPointer<T, V>,
@@ -264,18 +278,18 @@ impl Core {
         Ok(counter)
     }
 
-    async fn read_pointer<T, V: TryFrom<PointerTarget> + Into<PointerTarget>>(
+    async fn read_pointer<T, V: TryFrom<PointerTarget>>(
         &self,
         address: &TypedPointerAddress<T, V>,
-    ) -> anyhow::Result<Option<TypedPointer<T, V>>>
+    ) -> anyhow::Result<V>
     where
         <V as TryFrom<PointerTarget>>::Error: Send + Sync + Display,
     {
         Ok(self
-            ._pointer_get(address.as_ref())
+            .get_pointer(address)
             .await?
-            .map(|p| TypedPointer::try_from_pointer(p))
-            .transpose()?)
+            .map(|p| p.into_target())
+            .ok_or(anyhow!("pointer not found"))?)
     }
 
     async fn _pointer_get(&self, address: &PointerAddress) -> anyhow::Result<Option<Pointer>> {

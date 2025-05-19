@@ -26,8 +26,8 @@ pub use progress::{Progress, Report as ProgressReport, Status as ProgressStatus}
 pub use vault::{VaultAddress, VaultConfig, VaultCreationSettings};
 pub use worker_key::{EitherWorkerKey, PublicWorkerKey, RetiredWorkerKey, WorkerKey};
 
-use crate::crypto::{TypedChunk, TypedChunkAddress, TypedOwnedRegister, TypedRegisterAddress};
-use anyhow::{anyhow, bail};
+use crate::crypto::{TypedChunk, TypedChunkAddress};
+use anyhow::bail;
 use autonomi::client::payment::PaymentOption;
 use autonomi::register::{RegisterAddress, RegisterValue};
 use autonomi::{AttoTokens, Pointer, PointerAddress, Scratchpad, ScratchpadAddress};
@@ -104,7 +104,7 @@ pub struct Core {
     client: AutonomiClient,
     wallet: EvmWallet,
     ark_address: ArkAddress,
-    register_cache: Cache<RegisterAddress, RegisterValue>,
+    register_cache: Cache<RegisterAddress, Option<RegisterValue>>,
     register_history_cache: Cache<RegisterAddress, Vec<RegisterValue>>,
     pointer_cache: Cache<PointerAddress, Option<Pointer>>,
     scratchpad_cache: Cache<ScratchpadAddress, Option<Scratchpad>>,
@@ -183,87 +183,6 @@ impl Core {
     {
         let chunk = TypedChunk::from_chunk(self.client.chunk_get(address.as_ref()).await?);
         chunk.try_into_inner()
-    }
-
-    async fn create_register<T, V: Into<RegisterValue>>(
-        &self,
-        register: &TypedOwnedRegister<T, V>,
-        value: V,
-        receipt: &mut Receipt,
-    ) -> anyhow::Result<()> {
-        let (attos, address) = self
-            .client
-            .register_create(register.owner().as_ref(), value.into(), self.payment())
-            .await?;
-        self.register_cache.invalidate(&address).await;
-        self.register_history_cache.invalidate(&address).await;
-        receipt.add(attos);
-        if register.address().as_ref() != &address {
-            bail!("incorrect register address returned");
-        }
-        Ok(())
-    }
-
-    async fn update_register<T, V: Into<RegisterValue>>(
-        &self,
-        register: &TypedOwnedRegister<T, V>,
-        value: V,
-        receipt: &mut Receipt,
-    ) -> anyhow::Result<()> {
-        let address = register.address().as_ref();
-        let res = self
-            .client
-            .register_update(register.owner().as_ref(), value.into(), self.payment())
-            .await;
-        self.register_cache.invalidate(address).await;
-        self.register_history_cache.invalidate(address).await;
-        receipt.add(res?);
-        Ok(())
-    }
-
-    async fn read_register<T, V: TryFrom<RegisterValue>>(
-        &self,
-        address: &TypedRegisterAddress<T, V>,
-    ) -> anyhow::Result<V>
-    where
-        <V as TryFrom<RegisterValue>>::Error: Display,
-    {
-        Ok(self
-            ._register_get(address.as_ref())
-            .await
-            .map(|v| V::try_from(v).map_err(|e| anyhow!("{}", e)))??)
-    }
-
-    async fn _register_get(&self, address: &RegisterAddress) -> anyhow::Result<RegisterValue> {
-        self.register_cache
-            .try_get_with_by_ref(address, self.client.register_get(address))
-            .await
-            .map_err(|e| e.into())
-    }
-
-    async fn register_history<T, V: TryFrom<RegisterValue>>(
-        &self,
-        address: &TypedRegisterAddress<T, V>,
-    ) -> anyhow::Result<Vec<V>>
-    where
-        <V as TryFrom<RegisterValue>>::Error: Display,
-    {
-        Ok(self
-            ._register_history(address.as_ref())
-            .await?
-            .into_iter()
-            .map(|v| V::try_from(v).map_err(|e| anyhow!("{}", e)))
-            .collect::<anyhow::Result<Vec<_>>>()?)
-    }
-
-    async fn _register_history(
-        &self,
-        address: &RegisterAddress,
-    ) -> anyhow::Result<Vec<RegisterValue>> {
-        self.register_history_cache
-            .try_get_with_by_ref(address, self.client.register_history(address).collect())
-            .await
-            .map_err(|e| e.into())
     }
 
     fn payment(&self) -> PaymentOption {

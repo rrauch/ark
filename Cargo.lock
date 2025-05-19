@@ -1029,6 +1029,7 @@ dependencies = [
  "age",
  "age-core",
  "ant-bootstrap",
+ "ant-networking",
  "anyhow",
  "autonomi",
  "bech32 0.11.0",

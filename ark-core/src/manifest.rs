@@ -210,7 +210,7 @@ impl Core {
         public_helm_key: &PublicHelmKey,
     ) -> anyhow::Result<Manifest> {
         let encrypted_manifest = self
-            .read_scratchpad_content(&public_helm_key.manifest())
+            .read_scratchpad(&public_helm_key.manifest())
             .await?;
         decryptor.decrypt_manifest(&encrypted_manifest)
     }
